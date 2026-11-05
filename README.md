@@ -28,19 +28,28 @@ parent --MissionBrief--> warden --guarded tools--> code
 
 ## See it work
 
-This is real hook output for a `payments-warden` that owns `services/payments/**`:
+This is real hook output for [`api-warden`](examples/agents/api-warden.md), which owns `services/api/**`:
 
 ```text
 ▸ parent dispatches with a bare task string
-MissionBrief rejected for payments-warden:
+MissionBrief rejected for api-warden:
 - no `mission-brief:` block found in the dispatch prompt
 
+▸ parent tries to widen the warden's authority in the brief
+MissionBrief rejected for api-warden:
+- authority-bounds.paths `services/**` widens api-warden's authority [services/api/**]
+  — a brief may only narrow it; route to the owning warden
+
 ▸ warden drifts into another team's code
-denied-by-authority (payments-warden): Edit services/auth/session.ts is outside
-edit authority [services/payments/**]. Do not work around this.
+denied-by-authority (api-warden): Edit apps/web/src/App.tsx is outside edit
+authority [services/api/**]. Do not work around this.
+
+▸ warden runs something off its allowlist
+denied-by-authority (api-warden): `pip install requests` is not in this
+warden's bash allowlist.
 
 ▸ warden tries to ship its own work
-denied-by-authority (payments-warden): `git commit` is reserved for the parent
+denied-by-authority (api-warden): `git commit` is reserved for the parent
 (wardens never integrate or release).
 
 ▸ warden claims victory without evidence
@@ -95,39 +104,93 @@ Requires Node ≥ 18. The CLI is one file with no dependencies.
 
 ## Quick start
 
+The CLI is the single file `bin/warden.mjs`, in the installed plugin's directory or in a clone of this repo. Any copy works, because it has no dependencies.
+
 ```bash
-W="node ~/.claude/plugins/…/wardens/bin/warden.mjs"   # or any copy of bin/warden.mjs
-$W new payments-warden --edit "services/payments/**" --test "npm test -- services/payments"
-$EDITOR .claude/agents/payments-warden.md               # write the domain primer
-$W doctor                                               # lint definitions
-$W route services/payments/charge.ts                    # → payments-warden
+alias warden="node /path/to/wardens/bin/warden.mjs"
+
+# 1. Start from a tested example (or scaffold one: warden new api-warden --edit "services/api/**" --test "pytest services/api")
+cp /path/to/wardens/examples/agents/api-warden.md .claude/agents/
+$EDITOR .claude/agents/api-warden.md   # adjust the globs and commands; rewrite the primer with YOUR invariants
+
+# 2. Lint it and check ownership
+warden doctor
+#   1 warden(s) of 1 agent file(s) checked — 0 error(s), 0 warning(s)
+warden route services/api/app/routes/users.py scripts/deploy.sh
+#   services/api/app/routes/users.py → api-warden
+#   scripts/deploy.sh → UNOWNED (parent owns it, or scaffold a warden)
 ```
 
-Then ask Claude for a change in `services/payments/`. The `dispatch` skill routes the change to the warden with a brief. Later, `warden stats` shows whether the team is earning its keep:
+Then ask Claude for a change in `services/api/`. The `dispatch` skill routes it to the warden with a brief, and the hooks record what happens. After two missions (the first passed, the second failed once and passed on retry), `warden stats` looked like this, with the brief rejections and guard denials from the demo above included:
 
 ```
 warden                disp  1st-pass  retry  rejected  guard-deny  malformed  avg-conf  outcomes
-payments-warden         12       83%      2         1           3          0      0.84  completed:11 failed:1
+api-warden               3       50%      1         2           3          0      0.68  completed:2 failed:1
 ```
+
+## A mission, end to end
+
+The parent opens the Agent prompt with a **MissionBrief**:
+
+```yaml
+mission-brief:
+  task: users-pagination
+  end-state: "GET /users paginates with limit/cursor; pytest services/api green."
+  why: "Unbounded /users responses time out for large tenants (INC-118)."
+  key-tasks:
+    - Write a failing test for limit/cursor
+    - Add pagination to the users route and service
+  authority-bounds:
+    paths:
+      - services/api/**
+  success-criteria:
+    - "pytest services/api -> 0 failures"
+  attempt: 1
+  retries-allowed: 1
+```
+
+The warden ends its response with an **UpwardReport**. This one passes the stop hook and `warden check report`:
+
+```yaml
+upward-report:
+  status: completed
+  confidence: 0.9
+  files-changed:
+    - services/api/app/routes/users.py
+    - services/api/tests/test_users.py
+  verification:
+    - "pytest services/api -> 212 passed"
+    - "ruff check services/api -> clean"
+  evidence-anchors:
+    - services/api/app/routes/users.py:41
+  escalation-required: false
+```
+
+The parent then follows the [`dispatch`](skills/dispatch/SKILL.md) FSM: it re-runs `pytest services/api` itself, checks that `git diff --name-only` stays inside `services/api/**`, and commits. Wardens never commit.
 
 ## A warden definition
 
+The frontmatter of [`examples/agents/api-warden.md`](examples/agents/api-warden.md):
+
 ```yaml
 ---
-name: payments-warden
-description: Bounded warden for services/payments/**. …
+name: api-warden
+description: Bounded warden for the Python API service (services/api/**). …
 tools: Read, Edit, Write, Grep, Glob, Bash
 warden:
-  kind: domain                 # or specialist: writes only its own outputs, never product code
-  edit: [services/payments/**] # enforced (or supplied by ownershipFile, below)
-  bash:                        # optional allowlist, prefix-matched per command segment
-    - npm test -- services/payments
-  expires: 2027-01-31          # optional pilot window; doctor fails once it has passed
+  kind: domain           # or specialist: writes only its own outputs, never product code
+  edit:                  # enforced (or supplied by ownershipFile, below)
+    - services/api/**
+  bash:                  # optional allowlist, prefix-matched per command segment
+    - pytest services/api
+    - ruff check services/api
+    - ruff format services/api
+    - mypy services/api
+    - git stash
 ---
-# payments-warden
-## Domain primer
-Invariants and failure history the code does not make obvious, anchored as `path:line`.
 ```
+
+Below the frontmatter comes the **domain primer**: a map of the area, invariants, and failure history that the code doesn't make obvious, anchored as `path:line` so `warden doctor` catches anchors that go stale. Add `expires: YYYY-MM-DD` under `warden:` to run a warden as a time-boxed pilot (see [`docs-warden`](examples/agents/docs-warden.md)).
 
 ### Examples
 
@@ -147,12 +210,13 @@ Configs cover: a warn-mode trial, a strict team setup, an existing ownership map
 
 ### Already have an ownership map?
 
-Don't copy it into frontmatter, where it would drift. Point Wardens at it:
+Don't copy it into frontmatter, where it would drift. Point Wardens at it in `.wardens/config.json`:
 
 ```json
-// .wardens/config.json
 { "ownershipFile": "tools/ownership.json" }
 ```
+
+See [`03-ownership-map.json`](examples/configs/03-ownership-map.json) and its [sample map](examples/configs/ownership.example.json).
 
 The file can be `[{ "glob": "...", "owner": "..." }]` or `{ "entries": [...] }`. Rows with a `null` owner mean unowned. A warden's authority is its frontmatter `edit` plus every glob the file assigns to it. `doctor` warns when the file names an owner that has no warden definition.
 

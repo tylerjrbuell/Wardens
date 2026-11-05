@@ -128,6 +128,16 @@ test("03-ownership-map: authority comes from the map; null owners stay unowned",
   assert.deepEqual(doctor(root, { today: "2026-11-05" }).findings.filter((f) => f.level === "error"), []);
 });
 
+test("README's api-warden snippet matches examples/agents/api-warden.md", () => {
+  const readme = readFileSync(join(EXAMPLES, "../README.md"), "utf8");
+  const snippet = readme.match(/```yaml\n---\nname: api-warden\n([\s\S]*?)\n---\n```/)?.[1];
+  assert.ok(snippet, "README has the api-warden frontmatter block");
+  const file = readFileSync(join(EXAMPLES, "agents/api-warden.md"), "utf8");
+  const strip = (l) => l.replace(/\s+#.*$/, "").trimEnd();
+  for (const line of snippet.split("\n").filter((l) => !l.startsWith("description:")).map(strip))
+    assert.ok(file.split("\n").map(strip).includes(line), `README line not in api-warden.md: ${JSON.stringify(line)}`);
+});
+
 test("04-retarget-bundled: overrides edit dirs and swaps a warden's commands", () => {
   const cfg = JSON.parse(readFileSync(join(EXAMPLES, "configs/04-retarget-bundled.json"), "utf8"));
   const root = project(cfg);
