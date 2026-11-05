@@ -8,7 +8,7 @@ Bounded subagents that own a slice of your codebase, take a typed mission, stay 
 <p align="center">
 <img alt="Claude Code plugin" src="https://img.shields.io/badge/Claude%20Code-plugin-e07a1f">
 <img alt="zero dependencies" src="https://img.shields.io/badge/dependencies-0-2ea44f">
-<img alt="node >= 18" src="https://img.shields.io/badge/node-%E2%89%A518-339933">
+<img alt="node 18+" src="https://img.shields.io/badge/node-18%2B-339933">
 <img alt="MIT" src="https://img.shields.io/badge/license-MIT-blue">
 </p>
 
@@ -20,10 +20,10 @@ Subagents are powerful and unaccountable. You hand one a task string, it edits w
 - **Every mission is recorded**, so `warden stats` tells you which wardens earn their keep.
 
 ```
-parent ──MissionBrief──▶ warden ──(guarded tools)──▶ code
-   ▲                                     │
-   └──────────── UpwardReport ◀──────────┘
-          deterministic FSM: verify · retry · re-route · escalate
+parent --MissionBrief--> warden --guarded tools--> code
+  ^                        |
+  +------ UpwardReport <---+
+     deterministic FSM: verify / retry / re-route / escalate
 ```
 
 ## See it work
