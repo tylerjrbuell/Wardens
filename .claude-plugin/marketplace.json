@@ -1,0 +1,16 @@
+{
+  "name": "wardens",
+  "owner": {
+    "name": "Tyler Buell"
+  },
+  "metadata": {
+    "description": "Extreme-ownership agent teams for Claude Code."
+  },
+  "plugins": [
+    {
+      "name": "wardens",
+      "source": "./",
+      "description": "Bounded domain wardens with hook-enforced authority, MissionBrief/UpwardReport contracts, and an outcome ledger."
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "description": "Wardens: MissionBrief dispatch gate, authority guard inside wardens, UpwardReport gate + outcome ledger.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Agent|Task|Edit|Write|MultiEdit|NotebookEdit|Bash",
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/warden.mjs\" hook pre-tool", "timeout": 10 }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/warden.mjs\" hook subagent-stop", "timeout": 10 }
+        ]
+      }
+    ]
+  }
+}

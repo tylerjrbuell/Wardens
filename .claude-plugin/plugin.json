@@ -1,0 +1,8 @@
+{
+  "name": "wardens",
+  "version": "0.1.0",
+  "description": "Extreme-ownership agent teams for Claude Code: bounded domain wardens with a MissionBrief-in / UpwardReport-out contract, hook-enforced authority, and an outcome ledger that measures whether the team actually helps.",
+  "author": { "name": "Tyler Buell" },
+  "license": "MIT",
+  "keywords": ["subagents", "multi-agent", "ownership", "hooks", "governance", "code-ownership"]
+}
