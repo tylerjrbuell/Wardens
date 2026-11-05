@@ -2,6 +2,8 @@
 
 ## 0.2.0 — unreleased
 
+- `examples/`: 7 tested warden definitions (api, web, migrations, infra, docs pilot, security reviewer, release gate) and 4 config variants (warn-mode trial, strict, ownership map, retarget bundled agents). `tests/examples.test.mjs` checks that each passes `doctor` and that the guard allows and denies what its text claims.
+- Fix: `doctor` no longer prints git's "not a git repository" stderr when run outside a repo.
 - `ownershipFile` config: read an existing `[{glob, owner}]` ownership map instead of duplicating it in frontmatter. `doctor` reports unreadable files and owners that have no warden definition.
 - README: team install via `.claude/settings.json`, ownership maps, CI recipe, alpha status.
 - docs/ORIGIN.md: updated with the full 166-mission record.

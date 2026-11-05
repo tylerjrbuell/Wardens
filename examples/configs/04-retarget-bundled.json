@@ -1,0 +1,10 @@
+{
+  "mode": "enforce",
+  "ledger": ".wardens/ledger.jsonl",
+  "agentDirs": [".claude/agents", "tools/agents"],
+  "authority": {
+    "debrief-scribe": { "edit": ["docs/debriefs/**"] },
+    "evidence-warden": { "edit": ["docs/experiments/**"] },
+    "web-warden": { "bash": ["pnpm --filter web test", "pnpm --filter web exec tsc"] }
+  }
+}

@@ -528,7 +528,7 @@ function hookSubagentStop(payload) {
 // ─── Doctor ──────────────────────────────────────────────────────────────────
 
 function trackedFiles(root) {
-  try { return execFileSync("git", ["ls-files"], { cwd: root, encoding: "utf8", maxBuffer: 64 << 20 }).split("\n").filter(Boolean); }
+  try { return execFileSync("git", ["ls-files"], { cwd: root, encoding: "utf8", maxBuffer: 64 << 20, stdio: ["ignore", "pipe", "ignore"] }).split("\n").filter(Boolean); }
   catch { return null; }
 }
 

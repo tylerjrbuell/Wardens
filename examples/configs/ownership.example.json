@@ -1,0 +1,12 @@
+{
+  "entries": [
+    { "glob": "services/api/**", "owner": "api-warden" },
+    { "glob": "apps/web/src/**", "owner": "web-warden" },
+    { "glob": "apps/web/tests/**", "owner": "web-warden" },
+    { "glob": "db/migrations/**", "owner": "migrations-warden" },
+    { "glob": "infra/**", "owner": "infra-warden" },
+    { "glob": "docs/guides/**", "owner": "docs-warden" },
+    { "glob": "scripts/**", "owner": null },
+    { "glob": "apps/web/package.json", "owner": null }
+  ]
+}

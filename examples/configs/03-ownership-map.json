@@ -1,0 +1,4 @@
+{
+  "mode": "enforce",
+  "ownershipFile": "examples/configs/ownership.example.json"
+}

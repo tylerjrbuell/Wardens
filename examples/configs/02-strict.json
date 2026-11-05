@@ -1,0 +1,10 @@
+{
+  "mode": "enforce",
+  "confidenceFloor": 0.8,
+  "neverCommands": [
+    "git commit", "git push", "git tag", "git rebase", "git reset --hard", "git checkout --",
+    "npm publish", "pnpm publish", "yarn publish", "bun publish",
+    "terraform apply", "terraform destroy", "kubectl delete", "rm -rf"
+  ],
+  "alwaysCommands": ["ls", "cat", "head", "tail", "wc", "grep", "rg", "git status", "git diff", "git log", "git show"]
+}

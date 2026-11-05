@@ -19,7 +19,7 @@ The CLI is `bin/warden.mjs` at the plugin root, two directories above this skill
 
 1. Install the plugin (see README). The hooks act only on agents that declare a `warden:` frontmatter block, so nothing else is affected.
 2. Map ownership. Pick the 2–4 areas where mistakes are costly and the context isn't obvious: invariants, past incidents, quirks. Don't give a warden a directory that the main thread handles fine on its own.
-3. `warden new` for each. Write the **domain primer** with things that are true but not obvious from the code: invariants, failure history with anchors, and "never do X because Y". Keep it under ~80 lines. Anchors (`path/file.ts:123`) are checked by `doctor`, so a stale primer fails CI instead of quietly misleading the warden.
+3. `warden new` for each, or start from the closest tested example in `examples/agents/` (api, web, migrations, infra, docs pilot, security reviewer, release gate) at the plugin root. Write the **domain primer** with things that are true but not obvious from the code: invariants, failure history with anchors, and "never do X because Y". Keep it under ~80 lines. Anchors (`path/file.ts:123`) are checked by `doctor`, so a stale primer fails CI instead of quietly misleading the warden.
 4. Optionally add `.wardens/config.json` (below), then commit `.claude/agents/` and the config. Add `.wardens/ledger.jsonl` to `.gitignore`, or commit it if you want team-wide stats.
 5. Add `warden doctor` to CI.
 

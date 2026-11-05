@@ -129,6 +129,22 @@ warden:
 Invariants and failure history the code does not make obvious, anchored as `path:line`.
 ```
 
+### Examples
+
+[`examples/`](examples/) has tested, ready-to-copy wardens for common roles, plus config variants:
+
+| Warden | Pattern |
+|---|---|
+| [`api-warden`](examples/agents/api-warden.md) | A service owner, with a public-contract invariant that triggers `needs-approval` |
+| [`web-warden`](examples/agents/web-warden.md) | Partial ownership: `src/` and `tests/`, not `package.json` |
+| [`migrations-warden`](examples/agents/migrations-warden.md) | The tightest box: `Write` but no `Edit`; destructive changes need approval |
+| [`infra-warden`](examples/agents/infra-warden.md) | May `terraform plan`, never `apply`, enforced by the allowlist |
+| [`docs-warden`](examples/agents/docs-warden.md) | A time-boxed pilot with `expires` |
+| [`security-reviewer`](examples/agents/security-reviewer.md) | A specialist that finds problems and routes each one to its owner |
+| [`release-gate`](examples/agents/release-gate.md) | A specialist that audits a release and hands a human the tag commands |
+
+Configs cover: a warn-mode trial, a strict team setup, an existing ownership map, and retargeting the bundled agents. Each example is tested: it must pass `doctor`, and the guard must allow and deny what its text claims.
+
 ### Already have an ownership map?
 
 Don't copy it into frontmatter, where it would drift. Point Wardens at it:
