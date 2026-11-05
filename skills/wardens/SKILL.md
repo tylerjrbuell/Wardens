@@ -51,9 +51,12 @@ warden:
   "confidenceFloor": 0.7,
   "neverCommands": ["git commit", "git push", "git tag", "git rebase", "git reset --hard", "npm publish"],
   "alwaysCommands": ["ls", "cat", "grep", "rg", "git status", "git diff", "git log", "git show"],
-  "authority": { "debrief-scribe": { "edit": ["docs/debriefs/**"] } }
+  "authority": { "debrief-scribe": { "edit": ["docs/debriefs/**"] } },
+  "ownershipFile": "tools/ownership.json"
 }
 ```
+
+- `ownershipFile` reads an existing path → owner map (`[{glob, owner}]` or `{entries: [...]}`). Each warden's authority becomes its frontmatter `edit` plus the globs the file assigns it, so ownership has one source of truth.
 
 - `mode: "warn"` records would-be denials in the ledger without blocking anything. Use it for the first week to size authorities from real data.
 - `authority` overrides a warden's `edit`/`bash` without editing its file. Use it to point the bundled `debrief-scribe` and `evidence-warden` at your own directories.

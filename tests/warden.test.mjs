@@ -230,6 +230,20 @@ test("config authority override retargets a warden", () => {
   assert.deepEqual(w.warden.edit, ["docs/**"]);
 });
 
+test("ownershipFile supplies edit globs (single source of truth); doctor flags unknown owners and bad files", () => {
+  const root = fixture({ config: { ownershipFile: "owners.json" } });
+  writeFileSync(join(root, "owners.json"), JSON.stringify({ entries: [
+    { glob: "services/payments/api/**", owner: "pay-warden" },
+    { glob: "services/legacy/**", owner: null },
+    { glob: "services/auth/**", owner: "auth-warden" },
+  ] }));
+  const w = loadAgents(root).find((a) => a.name === "pay-warden");
+  assert.deepEqual(w.warden.edit, ["services/payments/**", "services/payments/api/**"]);
+  assert.ok(doctor(root).findings.some((f) => /owner `auth-warden` but no agent/.test(f.msg)));
+  writeFileSync(join(root, "owners.json"), "{nope");
+  assert.match(doctor(root).findings[0].msg, /ownershipFile owners.json/);
+});
+
 test("new scaffolds a valid warden that doctor accepts", () => {
   const root = fixture();
   const r = spawnSync("node", [BIN, "new", "auth-warden", "--edit", "services/auth/**", "--test", "npm test -- services/auth", "--root", root], { encoding: "utf8" });

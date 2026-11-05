@@ -225,6 +225,7 @@ const DEFAULT_CONFIG = {
   alwaysCommands: ["cd", "pwd", "ls", "cat", "head", "tail", "wc", "grep", "rg", "echo", "git status", "git diff", "git log", "git show", "git ls-files", "git blame"],
   confidenceFloor: 0.7,
   authority: {}, // per-warden overrides: { "<name>": { edit: [...], bash: [...] } }
+  ownershipFile: null, // optional existing ownership map: JSON `[{glob, owner}]` or `{entries: [{glob, owner}]}`
 };
 
 export function loadConfig(root) {
@@ -234,8 +235,25 @@ export function loadConfig(root) {
   catch (e) { return { ...DEFAULT_CONFIG, _error: `invalid .wardens/config.json: ${e.message}` }; }
 }
 
+/** Globs per owner from `config.ownershipFile`, so a repo that already maps paths → owners keeps ONE source of truth. */
+export function loadOwnership(root, config) {
+  const owned = new Map();
+  if (!config.ownershipFile) return owned;
+  let data;
+  try { data = JSON.parse(readFileSync(resolve(root, config.ownershipFile), "utf8")); }
+  catch (e) { throw new Error(`ownershipFile ${config.ownershipFile}: ${e.message}`); }
+  const rows = Array.isArray(data) ? data : data?.entries;
+  if (!Array.isArray(rows)) throw new Error(`ownershipFile ${config.ownershipFile}: expected an array or {entries: [...]}`);
+  for (const r of rows) {
+    if (!r || typeof r.glob !== "string" || typeof r.owner !== "string" || !r.owner) continue; // null owner = unowned
+    (owned.get(r.owner) || owned.set(r.owner, []).get(r.owner)).push(r.glob);
+  }
+  return owned;
+}
+
 /** Load every agent definition; wardens are the ones with a `warden:` frontmatter block. */
 export function loadAgents(root, config = loadConfig(root)) {
+  const owned = loadOwnership(root, config);
   const dirs = [...config.agentDirs.map((d) => join(root, d)), join(PLUGIN_ROOT, "agents")];
   const seen = new Map();
   for (const dir of dirs) {
@@ -251,7 +269,7 @@ export function loadAgents(root, config = loadConfig(root)) {
       if (w) {
         const o = config.authority?.[name] || {};
         w.kind = w.kind || "domain";
-        w.edit = toList(o.edit ?? w.edit);
+        w.edit = [...new Set([...toList(o.edit ?? w.edit), ...(owned.get(name) || [])])];
         w.bash = o.bash ?? w.bash;
         if (w.bash != null) w.bash = toList(w.bash);
       }
@@ -516,6 +534,9 @@ function trackedFiles(root) {
 
 export function doctor(root, { today = new Date().toISOString().slice(0, 10) } = {}) {
   const config = loadConfig(root);
+  let owned;
+  try { owned = loadOwnership(root, config); }
+  catch (e) { return { findings: [{ level: "error", agent: "config", msg: e.message }], wardens: 0, agents: 0 }; }
   // Lint the project's own definitions; bundled plugin agents are linted in the plugin's own CI (root === plugin root).
   const agents = loadAgents(root, config).filter((a) => resolve(root) === resolve(PLUGIN_ROOT) || !a.file.startsWith(join(PLUGIN_ROOT, "agents")));
   const findings = [];
@@ -564,6 +585,8 @@ export function doctor(root, { today = new Date().toISOString().slice(0, 10) } =
       }
     }
   }
+  for (const owner of owned.keys())
+    if (!wardens.some((a) => a.name === owner)) add("warn", "config", `ownershipFile names owner \`${owner}\` but no agent with a \`warden:\` block has that name — its paths are unenforced`);
   // Ownership overlap between domain wardens → ambiguous routing.
   const domain = wardens.filter((a) => a.warden.kind === "domain");
   for (let x = 0; x < domain.length; x++) for (let y = x + 1; y < domain.length; y++)

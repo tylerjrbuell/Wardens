@@ -9,7 +9,9 @@ parent ──MissionBrief──▶ warden ──(guarded tools)──▶ code
           deterministic FSM: verify · retry · re-route · escalate
 ```
 
-Wardens came out of [reactive-agents-ts](https://github.com/tylerjrbuell/reactive-agents-ts), where ten of them ran for five months. This pack generalizes them and fixes what that run exposed. [docs/ORIGIN.md](docs/ORIGIN.md) has the evidence.
+Wardens came out of [reactive-agents-ts](https://github.com/tylerjrbuell/reactive-agents-ts), where ten of them handled **166 logged missions** between May and November 2026. This pack generalizes the system and fixes what that run exposed: authority that existed only in prose, a lift evaluation that never ran, and primers that went stale. [docs/ORIGIN.md](docs/ORIGIN.md) has the evidence.
+
+> **Status: v0.2, alpha.** The contracts, CLI and hook logic are covered by tests. The hook payload fields come from the Claude Code hooks documentation, and their first live run is happening in reactive-agents-ts in `warn` mode. Expect sharp edges, and please report them.
 
 ## Why
 
@@ -28,23 +30,34 @@ Plain subagents are a work crew: you give them a task string, they edit whatever
 
 ## Install
 
+**For yourself:**
+
 ```bash
 /plugin marketplace add tylerjrbuell/wardens
 /plugin install wardens@wardens
 ```
 
-The plugin ships three things. The hooks do nothing unless an agent declares a `warden:` block.
+**For everyone working in a repo:** commit this to `.claude/settings.json`. Claude Code prompts each contributor to trust the marketplace the first time.
+
+```json
+{
+  "extraKnownMarketplaces": { "wardens": { "source": { "source": "github", "repo": "tylerjrbuell/wardens" } } },
+  "enabledPlugins": { "wardens@wardens": true }
+}
+```
+
+The plugin ships three things. The hooks do nothing unless an agent declares a `warden:` block, so they never touch your other subagents.
 
 - **Hooks:** dispatch gate, authority guard, report gate, and ledger.
 - **Skills:** `mission-brief`, `upward-report`, `dispatch` (the parent playbook), and `wardens` (admin).
 - **Agents:** `debrief-scribe` and `evidence-warden`. Both are generic, and you can repoint their output directories in config.
 
-Requires Node ≥ 18. The CLI is a single file with no dependencies. For CI, fetch `bin/warden.mjs` pinned to a commit and run `node warden.mjs doctor --strict`. (`npx github:…` currently trips an npm bug, `GitFetcher requires an Arborist constructor`.)
+Requires Node ≥ 18. The CLI is one file with no dependencies.
 
 ## Quick start
 
 ```bash
-W="node ~/.claude/plugins/…/wardens/bin/warden.mjs"   # or any copy of bin/warden.mjs: one file, no deps
+W="node ~/.claude/plugins/…/wardens/bin/warden.mjs"   # or any copy of bin/warden.mjs
 $W new payments-warden --edit "services/payments/**" --test "npm test -- services/payments"
 $EDITOR .claude/agents/payments-warden.md               # write the domain primer
 $W doctor                                               # lint definitions
@@ -67,7 +80,7 @@ description: Bounded warden for services/payments/**. …
 tools: Read, Edit, Write, Grep, Glob, Bash
 warden:
   kind: domain                 # or specialist: writes only its own outputs, never product code
-  edit: [services/payments/**] # enforced
+  edit: [services/payments/**] # enforced (or supplied by ownershipFile, below)
   bash:                        # optional allowlist, prefix-matched per command segment
     - npm test -- services/payments
   expires: 2027-01-31          # optional pilot window; doctor fails once it has passed
@@ -77,6 +90,17 @@ warden:
 Invariants and failure history the code does not make obvious, anchored as `path:line`.
 ```
 
+### Already have an ownership map?
+
+Don't copy it into frontmatter, where it would drift. Point Wardens at it:
+
+```json
+// .wardens/config.json
+{ "ownershipFile": "tools/ownership.json" }
+```
+
+The file can be `[{ "glob": "...", "owner": "..." }]` or `{ "entries": [...] }`. Rows with a `null` owner mean unowned. A warden's authority is its frontmatter `edit` plus every glob the file assigns to it. `doctor` warns when the file names an owner that has no warden definition.
+
 ## What is and isn't enforced
 
 Hooks give you guardrails. They don't make a security boundary.
@@ -84,16 +108,27 @@ Hooks give you guardrails. They don't make a security boundary.
 - **Enforced:** Edit/Write/MultiEdit/NotebookEdit paths; Bash never-commands, the optional allowlist, output redirects, and command substitution; brief validity, authority narrowing, and retry budget; report shape and the confidence-versus-verification rule.
 - **Not enforced:** what a Bash command does inside an allowed prefix. An allowlisted `node script.js` can still write anywhere. Reads aren't restricted. The parent thread is never guarded, because it owns integration.
 - **Fail-open:** if the hook script itself crashes, the tool call goes ahead and the ledger records a `hook-error`. A broken guard should never lock up a session.
-- **Trial runs:** `"mode": "warn"` in `.wardens/config.json` logs would-be denials without blocking. Run it that way for a week to size authorities from real data.
+- **Trial runs:** `"mode": "warn"` in `.wardens/config.json` logs would-be denials without blocking. Run it that way for a week to size authorities from real data, then switch to `"enforce"`.
+
+## CI
+
+Run `doctor` so stale primers, ownership overlaps and expired pilots fail the build. Fetch the single CLI file pinned to a commit:
+
+```bash
+curl -fsSL "https://raw.githubusercontent.com/tylerjrbuell/wardens/<sha>/bin/warden.mjs" -o warden.mjs
+node warden.mjs doctor --strict
+```
+
+(`npx github:tylerjrbuell/wardens` currently fails on an npm bug, `GitFetcher requires an Arborist constructor`.)
 
 ## Configuration
 
-See the [`wardens` skill](skills/wardens/SKILL.md). Everything lives in the optional `.wardens/config.json`: mode, ledger path, agent dirs, confidence floor, never/always command lists, and per-warden authority overrides.
+Everything lives in the optional `.wardens/config.json`: mode, ledger path, agent dirs, ownership file, confidence floor, never/always command lists, and per-warden authority overrides. See the [`wardens` skill](skills/wardens/SKILL.md).
 
 ## Designing a team
 
 - **Start with 2–4 wardens**, in the areas where mistakes are expensive and the context isn't obvious. Unowned code stays with the main thread, and that's fine.
-- **Grow from data.** Add a warden when `warden route` keeps returning UNOWNED for one hot area, or when one warden's stats show it's doing two jobs. Delete wardens that rarely get dispatched.
+- **Grow from data, prune from data.** Add a warden when `warden route` keeps returning UNOWNED for one hot area. Delete wardens that rarely get dispatched: in the origin repo, 3 of 10 wardens went five months without a single dispatch.
 - **Primers hold non-obvious truth only**: invariants, incidents, "never X because Y". Anchor everything, and let `doctor` keep the anchors honest.
 - **Specialists don't patch.** Evidence, release, and probe roles find problems and name the owning warden. Domain wardens make the fix.
 

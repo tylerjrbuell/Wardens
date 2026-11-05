@@ -2,7 +2,23 @@
 
 Wardens were piloted in [reactive-agents-ts](https://github.com/tylerjrbuell/reactive-agents-ts) from 2026-05-23 to 2026-06-15 and ratified as permanent on 2026-09-03. The roster had 10 agents: 6 domain wardens (kernel, provider, tools, memory, runtime, compose) and 4 specialists (harness, ablation, release, debrief-scribe). The MissionBrief/UpwardReport contract and the dispatcher FSM came from *Extreme Ownership* (Willink/Babin), *Turn the Ship Around!* (Marquet), and MCDP-1 commander's intent.
 
-The pilot log has 44 entries: kernel 23, runtime 12, provider 3, harness 1, release 1, main/none bypass 4.
+As of 2026-11-05, the pilot log on the project's `dev` branch has **166 entries**: May 17, June 8, September 13, October 128. Missions by warden:
+
+| Warden | Missions |
+|---|---|
+| kernel-warden | 56 |
+| runtime-warden | 51 |
+| provider-warden | 18 |
+| harness-warden | 12 |
+| tools-warden | 9 |
+| ablation-warden | 3 |
+| release-warden | 1 |
+| **memory-warden, compose-warden, debrief-scribe** | **0** |
+| main thread / unowned (`none`, `main`, `controller-inline`) | 17 |
+
+Recorded outcomes were overwhelmingly `completed` (100+), with one `denied-by-authority`, one `interrupted`, and a handful of free-text variants ("completed-with-caveats", "family", "all"). Two signals stand out. Nearly every self-reported outcome is a success, which says more about the reporting than about the work. And three wardens never got a mission at all.
+
+On `dev`, the project also grew its own repo tooling alongside the wardens: an ownership manifest (`tools/repo/ownership.json`), a report validator with a next-action FSM, and manifest-expiry checks. That is independent confirmation that these pieces need to be mechanical. It's also why Wardens can read an existing ownership file (`ownershipFile`) instead of asking for a second copy.
 
 ## What worked (kept as-is)
 
@@ -24,7 +40,7 @@ The pilot log has 44 entries: kernel 23, runtime 12, provider 3, harness 1, rele
 | 7 | **Retry budget relied on the honor system.** "Never silent retry" was prose, and the brief had no attempt counter. | `attempt` field. The gate denies dispatches past `1 + retries-allowed`. |
 | 8 | **Confidence was self-reported with no rule.** The FSM routes on confidence, but nothing tied it to evidence. | `verification` field (commands run, with results). Confidence ≥ floor without verification is rejected. |
 | 9 | **The contract contradicted itself.** One warden said "invalid brief → `denied-by-authority`" in its workflow and "→ `failed`" in its I/O section. The scribe required a commit sha that wardens never produce. Approval was a "preliminary report" convention rather than a status. | One status enum with defined meanings, `needs-approval` added as a real status, and `approved-actions` in the brief. |
-| 10 | **The roster grew without its gate.** The plan said "start with one warden, expand on evidence". The roster reached 10 with no evaluation. | Guidance plus `stats`: grow from UNOWNED route misses and per-warden numbers, and delete wardens that rarely get dispatched. Pilot `expires:` lives in frontmatter, and `doctor` fails once it has passed. This generalizes the original repo's `check-no-expired-pilots.sh`. |
+| 10 | **The roster grew without its gate.** The plan said "start with one warden, expand on evidence". The roster reached 10 with no evaluation, and three of the ten never received a mission. | Guidance plus `stats`: grow from UNOWNED route misses and per-warden numbers, and delete wardens that rarely get dispatched. Pilot `expires:` lives in frontmatter, and `doctor` fails once it has passed. This generalizes the original repo's `check-no-expired-pilots.sh`. |
 | 11 | **Unowned work was ambiguous.** Log entries said `warden: none` or `routed: main` without a rule. | Explicit: unowned paths belong to the parent, and repeated misses justify a new warden. |
 
 ## What stayed project-specific (not in the pack)
