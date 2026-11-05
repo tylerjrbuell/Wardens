@@ -9,7 +9,7 @@
 - Validation with did-you-mean for typos (`own` → `owns`, `mood` → `mode`). One bad key never disables the rest of the guard.
 - New commands: `warden init` (commented starter file, gitignores `.wardens/`), `warden team` (the roster with owned globs, allowed commands, missions and first-pass rate), `warden migrate [--dry-run]`.
 - `warden new` now appends to `wardens.yaml`, takes `--owns`/`--run`, and **promotes an existing agent** (keeps its file) as well as scaffolding new ones.
-- The bundled agents' defaults move to `defaults.yaml` and can be overridden per key from `wardens.yaml`. Their default output dirs move from `.wardens/` to `docs/debriefs/` and `docs/evidence/`.
+- The bundled agents' defaults are built into the CLI, which stays a single self-contained file that CI can fetch on its own. They can be overridden per key from `wardens.yaml`. Their default output dirs move from `.wardens/` to `docs/debriefs/` and `docs/evidence/`.
 - `doctor` adds: declared wardens with no agent file, agents that look like wardens but aren't declared, and leftover v0.2 config.
 - Examples: one complete `examples/wardens.yaml` plus `examples/variants/` (trial, strict, ownership map) replace `examples/configs/*.json`.
 - Fix: a quoted YAML value followed by a `# comment` kept the comment in the value.

@@ -230,6 +230,13 @@ export const BUILTIN_NEVER = ["git commit", "git push", "git tag", "git rebase",
 // Read-only commands every warden may run whatever its `run` allowlist says. `always-run` adds to this list.
 export const BUILTIN_ALWAYS = ["cd", "pwd", "ls", "cat", "head", "tail", "wc", "grep", "rg", "echo", "git status", "git diff", "git log", "git show", "git ls-files", "git blame"];
 
+// Defaults for the agents the plugin ships in agents/. Embedded (not a data file) so this CLI stays a single
+// self-contained file: CI can fetch just bin/warden.mjs. A project's wardens.yaml overrides any key per warden.
+export const BUNDLED_WARDENS = {
+  "debrief-scribe": { kind: "specialist", owns: ["docs/debriefs/**"], run: ["git show", "git diff", "git log"] },
+  "evidence-warden": { kind: "specialist", owns: ["docs/evidence/**"] },
+};
+
 const TOP_KEYS = ["version", "mode", "confidence-floor", "ledger", "agent-dirs", "ownership-file", "never-run", "always-run", "wardens"];
 const WARDEN_KEYS = ["kind", "owns", "run", "expires"];
 const KINDS = ["domain", "specialist"];
@@ -317,7 +324,7 @@ function readAgents(root, agentDirs) {
 }
 
 /**
- * Load the team: `.claude/wardens.yaml` merged over the plugin's bundled defaults (`defaults.yaml`), plus
+ * Load the team: `.claude/wardens.yaml` merged over the bundled wardens' defaults (BUNDLED_WARDENS), plus
  * `ownership-file` globs, plus every agent file. Never throws: problems are collected for `doctor`/`team`,
  * and the valid parts still load, so one typo never silently disables the whole guard.
  */
@@ -344,8 +351,7 @@ export function loadTeam(root) {
   let owned = new Map();
   try { owned = loadOwnership(root, settings); } catch (e) { problems.push(e.message); }
 
-  const defaultsFile = join(PLUGIN_ROOT, "defaults.yaml");
-  const bundled = existsSync(defaultsFile) ? parseYaml(readFileSync(defaultsFile, "utf8"))?.wardens ?? {} : {};
+  const bundled = BUNDLED_WARDENS;
   const declared = isMap(raw.wardens) ? raw.wardens : {};
   const agents = readAgents(root, settings.agentDirs);
   const wardens = new Map();
@@ -646,6 +652,7 @@ export function doctor(root, { today = new Date().toISOString().slice(0, 10) } =
   const wardens = [...team.wardens.values()].filter((w) => lintPlugin || w.source === "project" || (w.agent && !w.agent.bundled));
   const agentNames = team.agents.map((a) => a.name);
   for (const w of wardens) {
+    if (!w.agent && w.name in BUNDLED_WARDENS) continue; // the plugin provides this agent at runtime (CI may run the CLI alone)
     if (!w.agent) { add("error", w.name, `declared in ${CONFIG_PATH} but there is no agent file .claude/agents/${w.name}.md${didYouMean(w.name, agentNames)}`); continue; }
     if (w.kind === "domain" && !w.edit.length) add("error", w.name, "domain warden owns nothing — add `owns` globs (or an ownership-file row)");
     const tools = String(w.agent.data.tools || "");

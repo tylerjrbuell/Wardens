@@ -57,7 +57,7 @@ wardens:                        # keep this section last so `warden new` can app
       - docs/debriefs/**
 ```
 
-- **Bundled agents** (`debrief-scribe`, `evidence-warden`) are wardens out of the box, with defaults from the plugin's `defaults.yaml`. Declaring them here overrides key by key.
+- **Bundled agents** (`debrief-scribe`, `evidence-warden`) are wardens out of the box, with defaults built into the CLI (`debrief-scribe` owns `docs/debriefs/**`, `evidence-warden` owns `docs/evidence/**`). Declaring them here overrides key by key.
 - **`ownership-file`** keeps an existing path → owner map as the single source: a warden's authority is its `owns` plus every glob the map assigns to it, and `owner: null` rows stay unowned.
 - **Problems don't disable the guard.** An invalid key is reported by `doctor`, and the rest of the file still loads.
 

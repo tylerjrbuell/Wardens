@@ -186,7 +186,16 @@ test("typos and bad values are reported with did-you-mean; valid parts still loa
   assert.ok(findWarden(team, "pay-warden"), "one typo never disables the rest of the guard");
 });
 
-test("bundled wardens come from the plugin's defaults.yaml; the project file overrides per key", () => {
+test("the CLI is self-contained: run alone (as CI fetches it), bundled wardens still resolve", () => {
+  const root = fixture({ yaml: PAY_YAML + "  evidence-warden:\n    owns:\n      - wiki/ablations/**\n" });
+  const alone = mkdtempSync(join(tmpdir(), "wardens-cli-"));
+  writeFileSync(join(alone, "warden.mjs"), readFileSync(BIN));
+  const r = spawnSync("node", [join(alone, "warden.mjs"), "doctor", "--root", root], { encoding: "utf8" });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /0 error\(s\)/);
+});
+
+test("bundled wardens have built-in defaults; the project file overrides per key", () => {
   const plain = loadTeam(fixture());
   assert.deepEqual(findWarden(plain, "debrief-scribe").edit, ["docs/debriefs/**"]);
   assert.equal(findWarden(plain, "debrief-scribe").source, "bundled");
