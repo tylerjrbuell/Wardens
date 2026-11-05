@@ -1,0 +1,15 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/tylerjrbuell/wardens/main/schema/wardens.schema.json
+#
+# Week one: one warden, warn mode. The hooks record would-be denials, rejected briefs and
+# malformed reports in .wardens/ledger.jsonl without blocking anything. After a week, run
+# `warden stats` and `warden team`, resize `owns`/`run` from what you see, then switch to enforce.
+version: 1
+mode: warn
+
+wardens:
+  api-warden:
+    kind: domain
+    owns:
+      - services/api/**
+    run:
+      - pytest services/api

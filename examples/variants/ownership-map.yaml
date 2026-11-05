@@ -1,0 +1,28 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/tylerjrbuell/wardens/main/schema/wardens.schema.json
+#
+# You already keep a path → owner map (for code review routing, CI scoping, ...). Don't copy its
+# globs here, where they would drift: point `ownership-file` at it. Each warden's authority is its
+# own `owns` (none here) plus every glob the map assigns to it. Rows with `owner: null` stay unowned.
+version: 1
+mode: enforce
+ownership-file: examples/configs/ownership.example.json
+
+wardens:
+  api-warden:
+    kind: domain
+    run:
+      - pytest services/api
+  web-warden:
+    kind: domain
+    run:
+      - npm test --workspace apps/web
+  migrations-warden:
+    kind: domain
+    run:
+      - make db-test
+  infra-warden:
+    kind: domain
+    run:
+      - terraform plan
+  docs-warden:
+    kind: domain

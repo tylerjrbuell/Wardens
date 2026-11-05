@@ -2,15 +2,6 @@
 name: infra-warden
 description: Bounded warden for Terraform (infra/**). May format, validate and plan; never applies. Requires a MissionBrief; ends with an UpwardReport whose evidence includes the plan summary.
 tools: Read, Edit, Write, Grep, Glob, Bash
-warden:
-  kind: domain
-  edit:
-    - infra/**
-  bash:
-    - terraform fmt
-    - terraform validate
-    - terraform plan     # read-only against state; `terraform apply` is not on this list, so the guard denies it
-    - tflint
 ---
 
 # infra-warden

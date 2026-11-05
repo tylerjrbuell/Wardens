@@ -2,16 +2,6 @@
 name: api-warden
 description: Bounded warden for the Python API service (services/api/**). Owns routes, request validation, and the service's tests. Requires a MissionBrief; ends with an UpwardReport. Use for any change inside services/api/.
 tools: Read, Edit, Write, Grep, Glob, Bash
-warden:
-  kind: domain
-  edit:
-    - services/api/**
-  bash:
-    - pytest services/api
-    - ruff check services/api
-    - ruff format services/api
-    - mypy services/api
-    - git stash          # stash-and-rerun baselines for "pre-existing failure" claims
 ---
 
 # api-warden

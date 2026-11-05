@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/tylerjrbuell/wardens/main/schema/wardens.schema.json",
+  "title": "Wardens team (.claude/wardens.yaml)",
+  "description": "The whole warden team in one file: who owns which paths, what each warden may run, and team-wide settings. Agent prompts live in .claude/agents/<name>.md.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "version": { "const": 1, "description": "Config format version." },
+    "mode": {
+      "enum": ["enforce", "warn"],
+      "default": "enforce",
+      "description": "enforce: deny out-of-authority tool calls and invalid briefs/reports. warn: record them in the ledger only (use for the first week to size authorities)."
+    },
+    "confidence-floor": {
+      "type": "number", "minimum": 0, "maximum": 1, "default": 0.7,
+      "description": "An UpwardReport claiming at least this confidence must list `verification` (commands run + result)."
+    },
+    "ledger": { "type": "string", "default": ".wardens/ledger.jsonl", "description": "Where the hooks append the outcome ledger. Keep it under the gitignored .wardens/ directory." },
+    "agent-dirs": { "type": "array", "items": { "type": "string" }, "default": [".claude/agents"], "description": "Directories holding agent files. The plugin's bundled agents are always available." },
+    "ownership-file": {
+      "type": "string",
+      "description": "An existing path→owner map, JSON `[{glob, owner}]` or `{entries: [...]}`. Each warden's authority becomes its `owns` plus every glob assigned to it here. `owner: null` rows mean unowned."
+    },
+    "never-run": {
+      "type": "array", "items": { "type": "string" },
+      "description": "Commands no warden may run, added to the built-ins (git commit, git push, git tag, git rebase, git reset --hard, npm/pnpm/yarn/bun publish). Applies whatever a warden's `run` says."
+    },
+    "always-run": {
+      "type": "array", "items": { "type": "string" },
+      "description": "Read-only commands every warden may run, added to the built-ins (cd, pwd, ls, cat, head, tail, wc, grep, rg, echo, git status/diff/log/show/ls-files/blame)."
+    },
+    "wardens": {
+      "type": "object",
+      "description": "The team. Each key is a warden name and must match an agent file's `name` (.claude/agents/<name>.md).",
+      "propertyNames": { "pattern": "^[a-z][a-z0-9-]*$" },
+      "additionalProperties": {
+        "oneOf": [
+          { "type": "null", "description": "Declared with no settings: inherits the bundled defaults (debrief-scribe, evidence-warden)." },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "enum": ["domain", "specialist"], "default": "domain",
+                "description": "domain: owns code and fixes it. specialist: writes only its own reports (reviews, audits, evidence) and routes findings to domain wardens."
+              },
+              "owns": {
+                "type": "array", "items": { "type": "string", "minLength": 1 },
+                "description": "Globs this warden may edit (Edit/Write/redirects). Enforced. Quote globs that start with `*`, e.g. \"**/*.sql\"."
+              },
+              "run": {
+                "type": "array", "items": { "type": "string" },
+                "description": "Commands this warden may run, matched by prefix per shell segment (`pytest services/api` also allows `pytest services/api/test_x.py -q`). Omit to guard only never-run commands and redirects; [\"*\"] allows anything not in never-run."
+              },
+              "expires": {
+                "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                "description": "Pilot window end date. `warden doctor` fails after it until the warden is ratified (remove `expires`) or removed."
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

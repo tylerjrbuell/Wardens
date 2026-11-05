@@ -1,6 +1,6 @@
 ---
 name: mission-brief
-description: Compose the MissionBrief YAML block that must open every dispatch to a warden (any subagent whose definition has a `warden:` frontmatter block). Use BEFORE calling the Agent tool on a warden, and when re-dispatching after a failed UpwardReport. The wardens dispatch hook rejects briefs that are missing fields, vague, over the retry budget, or that widen the warden's authority.
+description: Compose the MissionBrief YAML block that must open every dispatch to a warden (any subagent declared in `.claude/wardens.yaml`). Use BEFORE calling the Agent tool on a warden, and when re-dispatching after a failed UpwardReport. The wardens dispatch hook rejects briefs that are missing fields, vague, over the retry budget, or that widen the warden's authority.
 ---
 
 # MissionBrief — intent in
@@ -19,7 +19,7 @@ mission-brief:
   key-tasks:                               # ≤ 5, ordered; more than 5 = split the mission
     - <step>
   authority-bounds:
-    paths:                                 # edit scope for THIS mission; must sit inside the warden's `warden.edit`
+    paths:                                 # edit scope for THIS mission; must sit inside the warden's `owns` (wardens.yaml)
       - <glob>
     commands:                              # the verification commands you expect it to run
       - <command>
@@ -38,7 +38,7 @@ mission-brief:
 ## Rules the hook enforces (dispatch is denied otherwise)
 
 1. `end-state`, `why`, `success-criteria`, `authority-bounds.paths` are present and are not `TBD`/`TODO`/`???`.
-2. Every `authority-bounds.paths` glob sits inside the warden's `warden.edit`. **A brief can narrow authority, never widen it.** If the work needs paths the warden doesn't own, run `warden route <path>` and dispatch the owner, or split the mission.
+2. Every `authority-bounds.paths` glob sits inside the warden's `owns` in `.claude/wardens.yaml`. **A brief can narrow authority, never widen it.** If the work needs paths the warden doesn't own, run `warden route <path>` and dispatch the owner, or split the mission.
 3. `key-tasks` has ≤ 5 items.
 4. `attempt ≤ 1 + retries-allowed`. When the budget is spent you escalate to the user. You don't re-dispatch.
 

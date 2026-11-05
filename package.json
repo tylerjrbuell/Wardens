@@ -1,6 +1,6 @@
 {
   "name": "wardens",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Extreme-ownership agent teams for Claude Code: bounded subagents (wardens) with hook-enforced path authority, MissionBrief-in / UpwardReport-out contracts, evidence-backed confidence, and an outcome ledger.",
   "type": "module",

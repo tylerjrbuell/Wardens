@@ -2,13 +2,6 @@
 name: migrations-warden
 description: Bounded warden for database migrations (db/migrations/**). Writes new forward migrations only; anything destructive goes through needs-approval. Requires a MissionBrief; ends with an UpwardReport.
 tools: Read, Write, Grep, Glob, Bash
-warden:
-  kind: domain
-  edit:
-    - db/migrations/**     # new files only, by convention; see invariant 1
-  bash:
-    - make db-test         # applies all migrations to a throwaway database, then rolls back
-    - make db-lint
 ---
 
 # migrations-warden

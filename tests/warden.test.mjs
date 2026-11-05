@@ -7,36 +7,40 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import {
   parseYaml, extractBlock, matchesAny, globWithin, globsOverlap, splitShell,
-  validateBrief, validateReport, checkToolCall, computeStats, doctor, loadAgents,
+  validateBrief, validateReport, checkToolCall, computeStats, doctor, loadTeam, findWarden,
+  validateTeamConfig, initTeam, addWarden, migrate, teamRows, stripLegacyBlock, yamlScalar,
+  CONFIG_PATH, BUILTIN_NEVER,
 } from "../bin/warden.mjs";
 
 const BIN = resolve(dirname(fileURLToPath(import.meta.url)), "../bin/warden.mjs");
+const PLUGIN = resolve(dirname(BIN), "..");
 
-const WARDEN = `---
-name: pay-warden
-description: test
-tools: Read, Edit, Write, Bash
-warden:
-  kind: domain
-  edit:
-    - services/payments/**
-  bash:
-    - npm test
----
-# pay-warden
-Primer anchors: \`services/payments/charge.ts:2\` and \`services/payments/gone.ts\`.
+const AGENT = (name, body = "") => `---\nname: ${name}\ndescription: test\ntools: Read, Edit, Write, Bash\n---\n# ${name}\n${body}`;
+const PAY_PRIMER = `Primer anchors: \`services/payments/charge.ts:2\` and \`services/payments/gone.ts\`.
 Tombstone: \`services/payments/legacy.ts\` was removed — do not recreate.
 <!-- \`path/to/file.ext:1\` inside a comment is ignored -->
 `;
+const PAY_YAML = `version: 1
+mode: enforce
+wardens:
+  pay-warden:
+    kind: domain
+    owns:
+      - services/payments/**
+    run:
+      - npm test
+`;
 
-function fixture({ extraAgents = {}, config } = {}) {
+/** A project with pay-warden declared in .claude/wardens.yaml (override with `yaml`) and its agent file. */
+function fixture({ yaml = PAY_YAML, agents = {}, files = {} } = {}) {
   const root = mkdtempSync(join(tmpdir(), "wardens-"));
   mkdirSync(join(root, ".claude/agents"), { recursive: true });
   mkdirSync(join(root, "services/payments"), { recursive: true });
   writeFileSync(join(root, "services/payments/charge.ts"), "export const a = 1;\n");
-  writeFileSync(join(root, ".claude/agents/pay-warden.md"), WARDEN);
-  for (const [n, body] of Object.entries(extraAgents)) writeFileSync(join(root, `.claude/agents/${n}.md`), body);
-  if (config) { mkdirSync(join(root, ".wardens"), { recursive: true }); writeFileSync(join(root, ".wardens/config.json"), JSON.stringify(config)); }
+  writeFileSync(join(root, ".claude/agents/pay-warden.md"), AGENT("pay-warden", PAY_PRIMER));
+  for (const [n, body] of Object.entries(agents)) writeFileSync(join(root, `.claude/agents/${n}.md`), body);
+  if (yaml != null) writeFileSync(join(root, CONFIG_PATH), yaml);
+  for (const [p, c] of Object.entries(files)) { mkdirSync(dirname(join(root, p)), { recursive: true }); writeFileSync(join(root, p), c); }
   return root;
 }
 
@@ -45,7 +49,9 @@ const runHook = (root, which, payload) => {
   assert.equal(r.status, 0, r.stderr);
   return r.stdout ? JSON.parse(r.stdout) : null;
 };
+const cli = (root, ...args) => spawnSync("node", [BIN, ...args, "--root", root], { encoding: "utf8" });
 const ledger = (root) => existsSync(join(root, ".wardens/ledger.jsonl")) ? readFileSync(join(root, ".wardens/ledger.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l)) : [];
+const errors = (root, today = "2026-11-05") => doctor(root, { today }).findings.filter((f) => f.level === "error");
 
 const BRIEF = `\`\`\`yaml
 mission-brief:
@@ -80,9 +86,9 @@ upward-report:
 `;
 
 // ── parsing ──
-test("parseYaml handles maps, lists, flow lists, block + wrapped scalars", () => {
-  const y = parseYaml("a: 1\nb:\n  - x\n  - 'y z'\nc:\n  d: [p, \"q r\"]\n  e: >\n    hello\n    world\nf: long\n  wrapped\ng:\n- top\nh: v # comment\n");
-  assert.deepEqual(y, { a: 1, b: ["x", "y z"], c: { d: ["p", "q r"], e: "hello world" }, f: "long wrapped", g: ["top"], h: "v" });
+test("parseYaml handles maps, lists, flow lists, block + wrapped scalars, comments", () => {
+  const y = parseYaml("a: 1\nb:\n  - x\n  - 'y z'\nc:\n  d: [p, \"q r\"]\n  e: >\n    hello\n    world\nf: long\n  wrapped\ng:\n- top\nh: v # comment\ni:   # just a comment\n  - \"**/*.sql\"   # trailing\n");
+  assert.deepEqual(y, { a: 1, b: ["x", "y z"], c: { d: ["p", "q r"], e: "hello world" }, f: "long wrapped", g: ["top"], h: "v", i: ["**/*.sql"] });
 });
 
 test("extractBlock finds fenced and bare blocks, last occurrence by default", () => {
@@ -92,7 +98,7 @@ test("extractBlock finds fenced and bare blocks, last occurrence by default", ()
   assert.equal(extractBlock("nothing here", "upward-report"), null);
 });
 
-// ── globs ──
+// ── globs + shell ──
 test("glob matching, narrowing, overlap", () => {
   assert.ok(matchesAny(["services/payments/**"], "services/payments"));
   assert.ok(matchesAny(["services/payments/**"], "services/payments/a/b.ts"));
@@ -131,7 +137,7 @@ test("validateReport ties confidence to verification and status to required fiel
 });
 
 // ── guard ──
-test("checkToolCall enforces edit globs, never-commands, redirects, bash allowlist", () => {
+test("checkToolCall enforces owned globs, never-run, redirects, the run allowlist", () => {
   const root = "/repo";
   const cfg = { neverCommands: ["git commit", "npm publish"], alwaysCommands: ["ls", "git diff"] };
   const w = { name: "pay-warden", edit: ["services/payments/**"], bash: ["npm test"] };
@@ -147,7 +153,199 @@ test("checkToolCall enforces edit globs, never-commands, redirects, bash allowli
   assert.match(checkToolCall(w, "Bash", { command: "ls > services/auth/x" }, root, cfg), /redirect/);
   assert.equal(checkToolCall(w, "Bash", { command: "ls > services/payments/out.txt" }, root, cfg), null);
   assert.match(checkToolCall(w, "Bash", { command: "ls $(cat x)" }, root, cfg), /substitution/);
-  assert.equal(checkToolCall({ ...w, bash: undefined }, "Bash", { command: "anything goes" }, root, cfg), null);
+  assert.equal(checkToolCall({ ...w, bash: null }, "Bash", { command: "anything goes" }, root, cfg), null);
+});
+
+// ── the one config file ──
+test("loadTeam reads .claude/wardens.yaml: settings, built-in lists, wardens, agents", () => {
+  const root = fixture({ yaml: PAY_YAML.replace("mode: enforce", "mode: warn\nconfidence-floor: 0.8\nnever-run:\n  - terraform apply") });
+  const team = loadTeam(root);
+  assert.deepEqual(team.problems, []);
+  assert.equal(team.settings.mode, "warn");
+  assert.equal(team.settings.confidenceFloor, 0.8);
+  assert.deepEqual(team.settings.neverCommands, [...BUILTIN_NEVER, "terraform apply"]);
+  const w = findWarden(team, "pay-warden");
+  assert.deepEqual([w.kind, w.edit, w.bash, w.source], ["domain", ["services/payments/**"], ["npm test"], "project"]);
+  assert.ok(w.agent.file.endsWith(".claude/agents/pay-warden.md"));
+  assert.equal(findWarden(team, "wardens:pay-warden").name, "pay-warden"); // plugin-namespaced agent types
+});
+
+test("typos and bad values are reported with did-you-mean; valid parts still load", () => {
+  const errs = validateTeamConfig(parseYaml("mood: warn\nmode: loud\nconfidence-floor: 7\nwardens:\n  Pay_Warden:\n    own:\n      - x/**\n  api-warden:\n    kind: domian\n    expires: soon\n"));
+  const text = errs.join("\n");
+  assert.match(text, /unknown key `mood` — did you mean `mode`\?/);
+  assert.match(text, /`mode` must be enforce \| warn/);
+  assert.match(text, /`confidence-floor` must be a number between 0 and 1/);
+  assert.match(text, /`wardens.Pay_Warden`: warden names are kebab-case/);
+  assert.match(text, /unknown key `own` — did you mean `owns`\?/);
+  assert.match(text, /`wardens.api-warden.kind` must be domain \| specialist/);
+  assert.match(text, /`wardens.api-warden.expires` must be a date/);
+  const root = fixture({ yaml: PAY_YAML.replace("version: 1", "version: 1\nmood: warn") });
+  const team = loadTeam(root);
+  assert.equal(team.problems.length, 1);
+  assert.ok(findWarden(team, "pay-warden"), "one typo never disables the rest of the guard");
+});
+
+test("bundled wardens come from the plugin's defaults.yaml; the project file overrides per key", () => {
+  const plain = loadTeam(fixture());
+  assert.deepEqual(findWarden(plain, "debrief-scribe").edit, ["docs/debriefs/**"]);
+  assert.equal(findWarden(plain, "debrief-scribe").source, "bundled");
+  const root = fixture({ yaml: PAY_YAML + "  debrief-scribe:\n    owns:\n      - wiki/debriefs/**\n" });
+  const w = findWarden(loadTeam(root), "debrief-scribe");
+  assert.deepEqual([w.edit, w.bash, w.kind], [["wiki/debriefs/**"], ["git show", "git diff", "git log"], "specialist"]);
+});
+
+test("ownership-file supplies owned globs; null owners stay unowned; unknown owners are flagged", () => {
+  const root = fixture({
+    yaml: PAY_YAML.replace("version: 1", "version: 1\nownership-file: owners.json"),
+    files: { "owners.json": JSON.stringify({ entries: [{ glob: "services/payments/api/**", owner: "pay-warden" }, { glob: "services/legacy/**", owner: null }, { glob: "services/auth/**", owner: "auth-warden" }] }) },
+  });
+  assert.deepEqual(findWarden(loadTeam(root), "pay-warden").edit, ["services/payments/**", "services/payments/api/**"]);
+  assert.ok(doctor(root).findings.some((f) => /owner `auth-warden`, which isn't declared/.test(f.msg)));
+  writeFileSync(join(root, "owners.json"), "{nope");
+  assert.ok(loadTeam(root).problems.some((p) => /ownership-file owners.json/.test(p)));
+});
+
+test("the JSON schema and the validator know the same keys", () => {
+  const schema = JSON.parse(readFileSync(join(PLUGIN, "schema/wardens.schema.json"), "utf8"));
+  const top = Object.keys(schema.properties).sort();
+  const wardenKeys = Object.keys(schema.properties.wardens.additionalProperties.oneOf[1].properties).sort();
+  const sample = Object.fromEntries(top.map((k) => [k, k === "wardens" ? { "x-warden": Object.fromEntries(wardenKeys.map((w) => [w, w === "kind" ? "domain" : w === "expires" ? "2027-01-01" : ["a"]])) } : k === "version" ? 1 : k === "mode" ? "warn" : k === "confidence-floor" ? 0.5 : ["agent-dirs", "never-run", "always-run"].includes(k) ? ["a"] : "a"]));
+  assert.deepEqual(validateTeamConfig(sample), []);
+});
+
+// ── init / new / team ──
+test("init writes a commented, valid wardens.yaml and gitignores .wardens/ exactly once", () => {
+  const root = fixture({ yaml: null });
+  const { gitignored } = initTeam(root, { mode: "warn" });
+  assert.ok(gitignored);
+  const text = readFileSync(join(root, CONFIG_PATH), "utf8");
+  assert.match(text, /^# yaml-language-server: \$schema=/);
+  assert.deepEqual(validateTeamConfig(parseYaml(text)), []);
+  assert.equal(loadTeam(root).settings.mode, "warn");
+  assert.throws(() => initTeam(root), /already exists/);
+  assert.equal(readFileSync(join(root, ".gitignore"), "utf8").match(/\.wardens\//g).length, 1);
+});
+
+test("new appends to wardens.yaml, creates the agent from the template, quotes risky globs", () => {
+  const root = fixture({ yaml: null });
+  const r = addWarden(root, "sql-warden", { owns: ["**/*.sql"], run: ["make db-test"] });
+  assert.ok(r.created && r.createdAgent);
+  const text = readFileSync(join(root, CONFIG_PATH), "utf8");
+  assert.match(text, /- "\*\*\/\*\.sql"/);
+  const w = findWarden(loadTeam(root), "sql-warden");
+  assert.deepEqual([w.edit, w.bash], [["**/*.sql"], ["make db-test"]]);
+  const agent = readFileSync(r.agentFile, "utf8");
+  assert.match(agent, /^---\nname: sql-warden\n/);
+  assert.doesNotMatch(agent, /\{\{|^warden:/m);
+  // registering an EXISTING agent as a warden keeps its file
+  writeFileSync(join(root, ".claude/agents/ops-warden.md"), AGENT("ops-warden", "my primer"));
+  const ops = addWarden(root, "ops-warden", { owns: ["ops/**"] });
+  assert.equal(ops.createdAgent, false);
+  assert.match(readFileSync(ops.agentFile, "utf8"), /my primer/);
+  assert.throws(() => addWarden(root, "sql-warden", { owns: ["x/**"] }), /already declared/);
+  assert.throws(() => addWarden(root, "Bad", { owns: ["x/**"] }), /kebab-case/);
+  assert.throws(() => addWarden(root, "empty-warden", {}), /needs at least one --owns/);
+  assert.deepEqual(errors(root).filter((e) => !/overlap/.test(e.msg)), []);
+});
+
+test("new refuses to append when `wardens:` is not the last section, leaving the file untouched", () => {
+  const yaml = "version: 1\nwardens:\n  pay-warden:\n    owns:\n      - services/payments/**\nmode: warn\n";
+  const root = fixture({ yaml });
+  assert.throws(() => addWarden(root, "x-warden", { owns: ["x/**"] }), /isn't the last section/);
+  assert.equal(readFileSync(join(root, CONFIG_PATH), "utf8"), yaml);
+});
+
+test("CLI: init → new → team → route → doctor round trip", () => {
+  const root = fixture({ yaml: null });
+  assert.equal(cli(root, "init").status, 0);
+  assert.equal(cli(root, "new", "web-warden", "--owns", "apps/web/**", "--run", "npm test").status, 0);
+  const team = cli(root, "team");
+  assert.match(team.stdout, /web-warden\s+domain\s+apps\/web\/\*\*\s+1\s+0/);
+  assert.match(team.stdout, /debrief-scribe .*plugin: agents\/debrief-scribe\.md/);
+  assert.match(cli(root, "route", "apps/web/x.tsx").stdout, /→ web-warden/);
+  const json = JSON.parse(cli(root, "team", "--json").stdout);
+  assert.equal(json.config, CONFIG_PATH);
+  assert.ok(json.wardens.some((w) => w.name === "web-warden" && w.agent === ".claude/agents/web-warden.md"));
+  // pay-warden's agent exists but isn't declared → warning, not silence
+  assert.match(cli(root, "doctor").stdout, /pay-warden\] looks like a warden but isn't declared/);
+});
+
+test("teamRows merges the ledger record into the roster", () => {
+  const root = fixture();
+  mkdirSync(join(root, ".wardens"), { recursive: true });
+  writeFileSync(join(root, ".wardens/ledger.jsonl"), [
+    { event: "dispatch", session_id: "s", warden: "pay-warden", attempt: 1 },
+    { event: "report", session_id: "s", warden: "pay-warden", status: "completed", confidence: 0.9 },
+  ].map((e) => JSON.stringify(e)).join("\n") + "\n");
+  const row = teamRows(loadTeam(root)).find((r) => r.name === "pay-warden");
+  assert.deepEqual([row.missions, row.firstPass, row.agent], [1, 1, ".claude/agents/pay-warden.md"]);
+});
+
+// ── migrate from v0.2 ──
+const V02_AGENT = `---
+name: pay-warden
+description: test
+tools: Read, Edit, Write, Bash
+warden:
+  kind: domain   # comment
+  edit:
+    - services/payments/**
+  bash:
+    - npm test
+  expires: 2027-01-31
+---
+# pay-warden
+primer stays
+`;
+
+test("migrate folds v0.2 frontmatter + .wardens/config.json into one wardens.yaml", () => {
+  const root = fixture({
+    yaml: null,
+    agents: { "pay-warden": V02_AGENT, "notes-scribe": AGENT("notes-scribe", "x").replace("tools:", "warden:\n  kind: specialist\n  edit: [notes/**]\ntools:") },
+    files: {
+      ".wardens/config.json": JSON.stringify({ mode: "warn", confidenceFloor: 0.8, ownershipFile: "owners.json", neverCommands: [...BUILTIN_NEVER, "terraform apply"], authority: { "debrief-scribe": { edit: ["wiki/debriefs/**"] } } }),
+      "owners.json": "[]",
+    },
+  });
+  assert.ok(errors(root).some((e) => /run `warden migrate`/.test(e.msg)));
+  assert.throws(() => initTeam(root), /run `warden migrate`/);
+  const dry = migrate(root, { dryRun: true });
+  assert.ok(!existsSync(join(root, CONFIG_PATH)), "dry run writes nothing");
+  assert.equal(dry.stripped.length, 2);
+  migrate(root);
+  const team = loadTeam(root);
+  assert.deepEqual(team.problems, []);
+  assert.equal(team.settings.mode, "warn");
+  assert.equal(team.settings.confidenceFloor, 0.8);
+  assert.equal(team.settings.ownershipFile, "owners.json");
+  assert.ok(team.settings.neverCommands.includes("terraform apply"));
+  const pay = findWarden(team, "pay-warden");
+  assert.deepEqual([pay.kind, pay.edit, pay.bash, pay.expires], ["domain", ["services/payments/**"], ["npm test"], "2027-01-31"]);
+  assert.deepEqual(findWarden(team, "notes-scribe").edit, ["notes/**"]);
+  assert.deepEqual(findWarden(team, "debrief-scribe").edit, ["wiki/debriefs/**"]);
+  const agent = readFileSync(join(root, ".claude/agents/pay-warden.md"), "utf8");
+  assert.doesNotMatch(agent, /^warden:|^\s+edit:/m);
+  assert.match(agent, /tools: Read, Edit, Write, Bash\n---\n# pay-warden\nprimer stays/);
+  assert.ok(!existsSync(join(root, ".wardens/config.json")));
+  assert.deepEqual(errors(root), []);
+  assert.throws(() => migrate(root), /already exists/);
+});
+
+test("stripLegacyBlock removes only the warden block", () => {
+  assert.equal(stripLegacyBlock("---\nname: a\nwarden:\n  edit:\n    - x\n\n  bash: [y]\ntools: Read\n---\nbody\n"), "---\nname: a\ntools: Read\n---\nbody\n");
+  assert.equal(stripLegacyBlock("no frontmatter"), "no frontmatter");
+});
+
+test("yamlScalar quotes only what YAML would misread", () => {
+  assert.equal(yamlScalar("services/api/**"), "services/api/**");
+  assert.equal(yamlScalar("pytest services/api -q"), "pytest services/api -q");
+  assert.equal(yamlScalar("bunx turbo run typecheck --filter=@reactive-agents/x"), "bunx turbo run typecheck --filter=@reactive-agents/x");
+  assert.equal(yamlScalar("**/*.sql"), '"**/*.sql"');
+  assert.equal(yamlScalar("--flag"), '"--flag"');
+  assert.equal(yamlScalar("a: b"), '"a: b"');
+  assert.equal(yamlScalar("true"), '"true"');
+  for (const s of ["**/*.sql", "a: b", "x # y", "plain/path"]) assert.equal(parseYaml(`k: ${yamlScalar(s)}`).k, s);
 });
 
 // ── hooks end-to-end ──
@@ -166,9 +364,15 @@ test("pre-tool hook: guard only applies inside wardens; warn mode records withou
   assert.equal(runHook(root, "pre-tool", { ...edit }), null); // main thread: untouched
   assert.equal(runHook(root, "pre-tool", { ...edit, agent_type: "general-purpose" }), null);
   assert.equal(runHook(root, "pre-tool", { ...edit, agent_type: "pay-warden" }).hookSpecificOutput.permissionDecision, "deny");
-  const warn = fixture({ config: { mode: "warn" } });
+  const warn = fixture({ yaml: PAY_YAML.replace("mode: enforce", "mode: warn") });
   assert.equal(runHook(warn, "pre-tool", { ...edit, tool_input: { file_path: join(warn, "services/auth/x.ts") }, agent_type: "pay-warden" }), null);
   assert.equal(ledger(warn)[0].enforced, false);
+});
+
+test("an agent is only guarded once it is declared in wardens.yaml", () => {
+  const root = fixture({ yaml: "version: 1\nwardens:\n" });
+  const edit = { agent_type: "pay-warden", tool_name: "Edit", tool_input: { file_path: join(root, "services/auth/x.ts") } };
+  assert.equal(runHook(root, "pre-tool", edit), null);
 });
 
 test("subagent-stop hook: blocks once on a bad report, then records", () => {
@@ -205,59 +409,24 @@ test("computeStats pairs dispatches with reports for first-pass rate", () => {
   assert.ok(Math.abs(s.meanConfidence - 2 / 3) < 1e-9);
 });
 
-test("doctor flags stale anchors, overlaps, expiry, legacy prose-only wardens", () => {
+test("doctor: stale anchors, overlaps, expiry, missing agents, undeclared wardens", () => {
   const root = fixture({
-    extraAgents: {
-      "ledger-warden": "---\nname: ledger-warden\ndescription: x\ntools: Read, Edit\nwarden:\n  edit:\n    - services/**\n  expires: 2020-01-01\n---\nbody\n",
-      "old-warden": "---\nname: old-warden\ndescription: x\n---\nReturns an upward-report.\n",
-      "helper": "---\nname: helper\ndescription: plain agent\n---\nnot a warden `does/not/exist.ts`\n",
-    },
+    yaml: PAY_YAML + "  ledger-warden:\n    owns:\n      - services/**\n    expires: 2020-01-01\n  ghost-warden:\n    owns:\n      - ghost/**\n",
+    agents: { "ledger-warden": AGENT("ledger-warden"), "old-warden": AGENT("old-warden", "Returns an upward-report.\n"), helper: "---\nname: helper\ndescription: plain agent\n---\nnot a warden `does/not/exist.ts`\n" },
   });
   const msgs = doctor(root, { today: "2026-01-01" }).findings.map((f) => `${f.level} ${f.agent} ${f.msg}`);
   assert.ok(msgs.some((m) => /stale anchor: `services\/payments\/gone.ts`/.test(m)));
-  assert.ok(!msgs.some((m) => /charge.ts/.test(m)));
-  assert.ok(!msgs.some((m) => /path\/to\/file/.test(m)));
-  assert.ok(!msgs.some((m) => /legacy.ts/.test(m)));
-  assert.ok(msgs.some((m) => /^error .*× .* edit authority overlaps/.test(m)));
+  assert.ok(!msgs.some((m) => /charge.ts|path\/to\/file|legacy.ts/.test(m)));
+  assert.ok(msgs.some((m) => /^error .*× .* owned paths overlap/.test(m)));
   assert.ok(msgs.some((m) => /^error ledger-warden pilot expired/.test(m)));
-  assert.ok(msgs.some((m) => /^warn old-warden authority is prose-only/.test(m)));
+  assert.ok(msgs.some((m) => /^error ghost-warden declared in .claude\/wardens.yaml but there is no agent file/.test(m)));
+  assert.ok(msgs.some((m) => /^warn old-warden looks like a warden but isn't declared/.test(m)));
   assert.ok(!msgs.some((m) => /helper/.test(m)));
 });
 
-test("config authority override retargets a warden", () => {
-  const root = fixture({ config: { authority: { "pay-warden": { edit: ["docs/**"] } } } });
-  const w = loadAgents(root).find((a) => a.name === "pay-warden");
-  assert.deepEqual(w.warden.edit, ["docs/**"]);
-});
-
-test("ownershipFile supplies edit globs (single source of truth); doctor flags unknown owners and bad files", () => {
-  const root = fixture({ config: { ownershipFile: "owners.json" } });
-  writeFileSync(join(root, "owners.json"), JSON.stringify({ entries: [
-    { glob: "services/payments/api/**", owner: "pay-warden" },
-    { glob: "services/legacy/**", owner: null },
-    { glob: "services/auth/**", owner: "auth-warden" },
-  ] }));
-  const w = loadAgents(root).find((a) => a.name === "pay-warden");
-  assert.deepEqual(w.warden.edit, ["services/payments/**", "services/payments/api/**"]);
-  assert.ok(doctor(root).findings.some((f) => /owner `auth-warden` but no agent/.test(f.msg)));
-  writeFileSync(join(root, "owners.json"), "{nope");
-  assert.match(doctor(root).findings[0].msg, /ownershipFile owners.json/);
-});
-
-test("new scaffolds a valid warden that doctor accepts", () => {
-  const root = fixture();
-  const r = spawnSync("node", [BIN, "new", "auth-warden", "--edit", "services/auth/**", "--test", "npm test -- services/auth", "--root", root], { encoding: "utf8" });
-  assert.equal(r.status, 0, r.stderr);
-  const w = loadAgents(root).find((a) => a.name === "auth-warden");
-  assert.deepEqual(w.warden.edit, ["services/auth/**"]);
-  assert.deepEqual(w.warden.bash, ["npm test -- services/auth"]);
-  assert.ok(!doctor(root).findings.some((f) => f.agent.includes("auth-warden") && f.level === "error"));
-});
-
-test("bundled plugin agents are valid wardens", () => {
-  const pluginRoot = resolve(dirname(BIN), "..");
-  const { findings } = doctor(pluginRoot);
-  assert.deepEqual(findings.filter((f) => f.level === "error"), []);
-  const names = loadAgents(pluginRoot).filter((a) => a.warden).map((a) => a.name).sort();
-  assert.deepEqual(names, ["debrief-scribe", "evidence-warden"]);
+test("bundled plugin agents are valid wardens with their defaults", () => {
+  assert.deepEqual(doctor(PLUGIN).findings.filter((f) => f.level === "error"), []);
+  const team = loadTeam(PLUGIN);
+  assert.deepEqual([...team.wardens.keys()].sort(), ["debrief-scribe", "evidence-warden"]);
+  assert.ok([...team.wardens.values()].every((w) => w.agent?.bundled && w.kind === "specialist"));
 });

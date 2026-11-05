@@ -2,19 +2,11 @@
 name: docs-warden
 description: Bounded warden for user-facing docs (docs/guides/**), running as a time-boxed pilot. Keeps guides in sync with shipped behavior. Requires a MissionBrief; ends with an UpwardReport.
 tools: Read, Edit, Write, Grep, Glob, Bash
-warden:
-  kind: domain
-  edit:
-    - docs/guides/**
-  bash:
-    - npm run docs:build
-    - npx markdownlint docs/guides
-  expires: 2027-03-31   # pilot window: `warden doctor` fails after this date until it is ratified (remove `expires`) or deleted
 ---
 
 # docs-warden
 
-This is a **pilot** warden. The `expires` date forces a decision. After it passes, `warden doctor` fails CI until someone looks at `warden stats` and either ratifies the warden (removes `expires`) or deletes it. An undecided pilot doesn't get to linger.
+This is a **pilot** warden. Its `expires` date in `.claude/wardens.yaml` forces a decision. After it passes, `warden doctor` fails CI until someone looks at `warden stats` and either ratifies the warden (removes `expires`) or deletes it. An undecided pilot doesn't get to linger.
 
 ## Domain primer
 

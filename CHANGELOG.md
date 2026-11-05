@@ -1,6 +1,20 @@
 # Changelog
 
-## 0.2.0 — unreleased
+## 0.3.0 — unreleased
+
+**Breaking: the whole team now lives in one file, `.claude/wardens.yaml`.** Run `warden migrate` to convert a v0.2 setup.
+
+- `.claude/wardens.yaml` replaces per-agent `warden:` frontmatter blocks and `.wardens/config.json`. Keys: `mode`, `confidence-floor`, `never-run`/`always-run` (added to the built-ins instead of replacing them), `ownership-file`, `ledger`, `agent-dirs`, and `wardens.<name>.{kind, owns, run, expires}`. Agent files hold only the prompt. `.wardens/` holds only runtime state and is gitignored, so the rule is: commit `.claude/`, ignore `.wardens/`.
+- `schema/wardens.schema.json` for editor autocomplete and validation (the `yaml-language-server` comment that `init` writes).
+- Validation with did-you-mean for typos (`own` → `owns`, `mood` → `mode`). One bad key never disables the rest of the guard.
+- New commands: `warden init` (commented starter file, gitignores `.wardens/`), `warden team` (the roster with owned globs, allowed commands, missions and first-pass rate), `warden migrate [--dry-run]`.
+- `warden new` now appends to `wardens.yaml`, takes `--owns`/`--run`, and **promotes an existing agent** (keeps its file) as well as scaffolding new ones.
+- The bundled agents' defaults move to `defaults.yaml` and can be overridden per key from `wardens.yaml`. Their default output dirs move from `.wardens/` to `docs/debriefs/` and `docs/evidence/`.
+- `doctor` adds: declared wardens with no agent file, agents that look like wardens but aren't declared, and leftover v0.2 config.
+- Examples: one complete `examples/wardens.yaml` plus `examples/variants/` (trial, strict, ownership map) replace `examples/configs/*.json`.
+- Fix: a quoted YAML value followed by a `# comment` kept the comment in the value.
+
+## 0.2.0
 
 - `examples/`: 7 tested warden definitions (api, web, migrations, infra, docs pilot, security reviewer, release gate) and 4 config variants (warn-mode trial, strict, ownership map, retarget bundled agents). `tests/examples.test.mjs` checks that each passes `doctor` and that the guard allows and denies what its text claims.
 - Fix: `doctor` no longer prints git's "not a git repository" stderr when run outside a repo.

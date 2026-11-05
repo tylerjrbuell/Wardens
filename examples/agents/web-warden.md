@@ -2,16 +2,6 @@
 name: web-warden
 description: Bounded warden for the web frontend (apps/web/**). Owns components, client state, and the frontend tests. Requires a MissionBrief; ends with an UpwardReport.
 tools: Read, Edit, Write, Grep, Glob, Bash
-warden:
-  kind: domain
-  edit:
-    - apps/web/src/**
-    - apps/web/tests/**
-  bash:
-    - npm test --workspace apps/web
-    - npx tsc -p apps/web
-    - npx eslint apps/web
-    - npx playwright test --project chromium   # e2e, read-only against a local dev server
 ---
 
 # web-warden

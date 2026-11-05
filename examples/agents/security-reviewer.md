@@ -2,15 +2,6 @@
 name: security-reviewer
 description: Cross-cutting specialist that audits a change or an area for security issues and writes findings to docs/security/reviews/**. Never patches code; names the owning warden for each finding. Requires a MissionBrief; ends with an UpwardReport.
 tools: Read, Write, Grep, Glob, Bash
-warden:
-  kind: specialist
-  edit:
-    - docs/security/reviews/**
-  bash:
-    - semgrep --config auto
-    - npm audit --omit dev
-    - pip-audit
-    - gitleaks detect --no-git
 ---
 
 # security-reviewer

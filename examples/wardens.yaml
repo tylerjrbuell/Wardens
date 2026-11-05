@@ -1,0 +1,93 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/tylerjrbuell/wardens/main/schema/wardens.schema.json
+#
+# A complete team for a repo with a Python API, a web app, a database, Terraform, and docs.
+# Copy to .claude/wardens.yaml and copy the agents you keep from examples/agents/ to .claude/agents/.
+version: 1
+
+mode: enforce          # start new teams with `warn` for a week, then switch
+
+never-run:             # on top of the built-ins (git commit/push/tag/rebase/reset --hard, *publish)
+  - terraform apply
+  - terraform destroy
+  - kubectl delete
+
+wardens:
+  # ── domain wardens: own code, fix it ────────────────────────────────────
+  api-warden:
+    kind: domain
+    owns:
+      - services/api/**
+    run:
+      - pytest services/api
+      - ruff check services/api
+      - ruff format services/api
+      - mypy services/api
+      - git stash          # stash-and-rerun baselines for "pre-existing failure" claims
+
+  web-warden:              # partial ownership: src + tests, NOT package.json or build config
+    kind: domain
+    owns:
+      - apps/web/src/**
+      - apps/web/tests/**
+    run:
+      - npm test --workspace apps/web
+      - npx tsc -p apps/web
+      - npx eslint apps/web
+      - npx playwright test --project chromium
+
+  migrations-warden:       # tightest box: new migrations only (its agent has Write but no Edit)
+    kind: domain
+    owns:
+      - db/migrations/**
+    run:
+      - make db-test
+      - make db-lint
+
+  infra-warden:            # may plan, never apply: `terraform apply` is in never-run above
+    kind: domain
+    owns:
+      - infra/**
+    run:
+      - terraform fmt
+      - terraform validate
+      - terraform plan
+      - tflint
+
+  docs-warden:             # a pilot: `warden doctor` fails after this date until you ratify or remove it
+    kind: domain
+    owns:
+      - docs/guides/**
+    run:
+      - npm run docs:build
+      - npx markdownlint docs/guides
+    expires: 2027-03-31
+
+  # ── specialists: write only their own reports, route findings to owners ─
+  security-reviewer:
+    kind: specialist
+    owns:
+      - docs/security/reviews/**
+    run:
+      - semgrep --config auto
+      - npm audit --omit dev
+      - pip-audit
+      - gitleaks detect --no-git
+
+  release-gate:            # audits a release; `git tag` and `npm publish` are built-in never-run
+    kind: specialist
+    owns:
+      - docs/releases/audits/**
+    run:
+      - npm ci
+      - npm run build
+      - npm test
+      - npm view
+      - git tag --list
+
+  # ── bundled with the plugin: retarget their output directories ─────────
+  debrief-scribe:
+    owns:
+      - docs/debriefs/**
+  evidence-warden:
+    owns:
+      - docs/experiments/**

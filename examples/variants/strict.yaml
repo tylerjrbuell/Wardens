@@ -1,0 +1,29 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/tylerjrbuell/wardens/main/schema/wardens.schema.json
+#
+# A mature team: enforce, a higher bar for claimed confidence, and team-wide never-run rules
+# that apply to every warden whatever its own `run` list says.
+version: 1
+mode: enforce
+confidence-floor: 0.8
+
+never-run:
+  - terraform apply
+  - terraform destroy
+  - kubectl delete
+  - rm -rf
+  - git checkout --
+
+wardens:
+  api-warden:
+    kind: domain
+    owns:
+      - services/api/**
+    run:
+      - pytest services/api
+      - ruff check services/api
+  infra-warden:
+    kind: domain
+    owns:
+      - infra/**
+    run:
+      - "*"                # anything not in never-run: this team trusts plan/validate/fmt freely

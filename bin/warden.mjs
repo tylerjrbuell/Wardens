@@ -1,20 +1,23 @@
 #!/usr/bin/env node
 // wardens — deterministic enforcement + measurement for bounded Claude Code subagents.
 //
-// Zero dependencies. Node >= 18.
+// Zero dependencies. Node >= 18. The whole team lives in ONE file: .claude/wardens.yaml
 //
-//   warden hook pre-tool        PreToolUse hook: authority guard (inside wardens) + dispatch gate (Agent tool)
-//   warden hook subagent-stop   SubagentStop hook: UpwardReport gate + ledger
-//   warden doctor               lint warden definitions (overlap, stale anchors, expiry, legacy prose-only authority)
-//   warden stats [--json]       outcome metrics from the ledger
-//   warden route <path...>      which warden owns a path
-//   warden new <name> --edit <glob> [--edit <glob>] [--kind domain|specialist] [--test "<cmd>"]
-//   warden check brief|report   validate a MissionBrief / UpwardReport read from stdin
+//   warden init [--mode warn|enforce]   create .claude/wardens.yaml (and ignore .wardens/)
+//   warden new <name> --owns <glob> [--owns <glob>] [--run "<cmd>"] [--kind domain|specialist]
+//                                       add a warden to wardens.yaml (+ its agent file if missing)
+//   warden team [--json]                the roster: who owns what, may run what, and how they're doing
+//   warden route <path...>              which warden owns a path
+//   warden doctor [--strict]            lint wardens.yaml + agents (typos, overlaps, stale anchors, expiry)
+//   warden stats [--json]               outcome metrics from the ledger
+//   warden check brief|report           validate a MissionBrief / UpwardReport read from stdin
+//   warden migrate [--dry-run]          convert v0.2 `warden:` frontmatter + .wardens/config.json into wardens.yaml
+//   warden hook pre-tool|subagent-stop  the plugin's hooks (dispatch gate, authority guard, report gate, ledger)
 //
 // Exit codes: 0 ok, 1 findings/invalid, 2 usage error.
 // Hooks fail OPEN on internal errors (a broken guard must never brick a session) but record the error.
 
-import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, appendFileSync, statSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, appendFileSync, statSync, unlinkSync } from "node:fs";
 import { join, resolve, relative, dirname, isAbsolute, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
@@ -111,6 +114,9 @@ export function parseYaml(src) {
 }
 
 function stripComment(s) {
+  // A quoted scalar ends at its closing quote; anything after it may only be a comment.
+  const q = s.match(/^("(?:[^"\\]|\\.)*"|'(?:[^']|'')*')\s*(#.*)?$/);
+  if (q) return q[1];
   if (/^["']/.test(s)) return s;
   return s.replace(/\s+#.*$/, "");
 }
@@ -215,35 +221,76 @@ export function projectDir(payload) {
   return resolve(process.env.CLAUDE_PROJECT_DIR || payload?.cwd || process.cwd());
 }
 
-const DEFAULT_CONFIG = {
-  mode: "enforce", // enforce | warn
-  ledger: ".wardens/ledger.jsonl",
-  agentDirs: [".claude/agents"],
-  // Integration + release belong to the parent thread. Wardens never run these.
-  neverCommands: ["git commit", "git push", "git tag", "git rebase", "git reset --hard", "npm publish", "pnpm publish", "yarn publish", "bun publish"],
-  // Read-only commands every warden may run regardless of its `bash:` allowlist.
-  alwaysCommands: ["cd", "pwd", "ls", "cat", "head", "tail", "wc", "grep", "rg", "echo", "git status", "git diff", "git log", "git show", "git ls-files", "git blame"],
-  confidenceFloor: 0.7,
-  authority: {}, // per-warden overrides: { "<name>": { edit: [...], bash: [...] } }
-  ownershipFile: null, // optional existing ownership map: JSON `[{glob, owner}]` or `{entries: [{glob, owner}]}`
-};
+// The team is ONE committed file. Runtime state (the ledger) lives in .wardens/, which is gitignored.
+export const CONFIG_PATH = ".claude/wardens.yaml";
+export const SCHEMA_URL = "https://raw.githubusercontent.com/tylerjrbuell/wardens/main/schema/wardens.schema.json";
 
-export function loadConfig(root) {
-  const file = join(root, ".wardens", "config.json");
-  if (!existsSync(file)) return { ...DEFAULT_CONFIG };
-  try { return { ...DEFAULT_CONFIG, ...JSON.parse(readFileSync(file, "utf8")) }; }
-  catch (e) { return { ...DEFAULT_CONFIG, _error: `invalid .wardens/config.json: ${e.message}` }; }
+// Integration + release belong to the parent thread: no warden ever runs these. `never-run` adds to this list.
+export const BUILTIN_NEVER = ["git commit", "git push", "git tag", "git rebase", "git reset --hard", "npm publish", "pnpm publish", "yarn publish", "bun publish"];
+// Read-only commands every warden may run whatever its `run` allowlist says. `always-run` adds to this list.
+export const BUILTIN_ALWAYS = ["cd", "pwd", "ls", "cat", "head", "tail", "wc", "grep", "rg", "echo", "git status", "git diff", "git log", "git show", "git ls-files", "git blame"];
+
+const TOP_KEYS = ["version", "mode", "confidence-floor", "ledger", "agent-dirs", "ownership-file", "never-run", "always-run", "wardens"];
+const WARDEN_KEYS = ["kind", "owns", "run", "expires"];
+const KINDS = ["domain", "specialist"];
+
+/** Settings with every default filled in. Used when there is no wardens.yaml at all. */
+export function defaultSettings() {
+  return { mode: "enforce", confidenceFloor: 0.7, ledger: ".wardens/ledger.jsonl", agentDirs: [".claude/agents"], ownershipFile: null, neverCommands: [...BUILTIN_NEVER], alwaysCommands: [...BUILTIN_ALWAYS] };
 }
 
-/** Globs per owner from `config.ownershipFile`, so a repo that already maps paths → owners keeps ONE source of truth. */
-export function loadOwnership(root, config) {
+const toList =(v) => (v == null ? [] : Array.isArray(v) ? v.filter((x) => x != null).map(String) : [String(v)]);
+const isMap = (v) => v != null && typeof v === "object" && !Array.isArray(v);
+
+function editDistance(a, b) {
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+  for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++)
+    d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+  return d[a.length][b.length];
+}
+/** " — did you mean `owns`?" when a key is a near-miss of a known one. */
+export function didYouMean(word, options) {
+  const best = options.map((o) => [o, editDistance(word, o)]).sort((x, y) => x[1] - y[1])[0];
+  const limit = word.length <= 3 ? 1 : Math.max(2, Math.floor(word.length / 4)); // mood→mode yes; web-warden→api-warden no
+  return best && best[1] <= limit ? ` — did you mean \`${best[0]}\`?` : "";
+}
+
+/** Validate the parsed wardens.yaml. Returns problems as strings, each naming the key path. */
+export function validateTeamConfig(raw) {
+  const errs = [];
+  if (!isMap(raw)) return ["the file must be a YAML mapping (`key: value` lines)"];
+  for (const k of Object.keys(raw)) if (!TOP_KEYS.includes(k)) errs.push(`unknown key \`${k}\`${didYouMean(k, TOP_KEYS)}`);
+  if (raw.version != null && raw.version !== 1) errs.push(`\`version\` must be 1 (got ${JSON.stringify(raw.version)})`);
+  if (raw.mode != null && !["enforce", "warn"].includes(raw.mode)) errs.push(`\`mode\` must be enforce | warn (got ${JSON.stringify(raw.mode)})`);
+  if (raw["confidence-floor"] != null && !(typeof raw["confidence-floor"] === "number" && raw["confidence-floor"] >= 0 && raw["confidence-floor"] <= 1))
+    errs.push("`confidence-floor` must be a number between 0 and 1");
+  for (const k of ["ledger", "ownership-file"]) if (raw[k] != null && typeof raw[k] !== "string") errs.push(`\`${k}\` must be a path`);
+  for (const k of ["agent-dirs", "never-run", "always-run"]) if (raw[k] != null && !Array.isArray(raw[k])) errs.push(`\`${k}\` must be a list`);
+  if (raw.wardens != null && !isMap(raw.wardens)) errs.push("`wardens` must map warden names to their settings");
+  for (const [name, w] of Object.entries(isMap(raw.wardens) ? raw.wardens : {})) {
+    const at = `wardens.${name}`;
+    if (!/^[a-z][a-z0-9-]*$/.test(name)) errs.push(`\`${at}\`: warden names are kebab-case (they must match the agent's \`name\`)`);
+    if (w == null) continue; // `name:` with nothing under it inherits defaults (bundled agents)
+    if (!isMap(w)) { errs.push(`\`${at}\` must be a mapping with ${WARDEN_KEYS.join(", ")}`); continue; }
+    for (const k of Object.keys(w)) if (!WARDEN_KEYS.includes(k)) errs.push(`\`${at}\`: unknown key \`${k}\`${didYouMean(k, WARDEN_KEYS)}`);
+    if (w.kind != null && !KINDS.includes(w.kind)) errs.push(`\`${at}.kind\` must be ${KINDS.join(" | ")} (got ${JSON.stringify(w.kind)})`);
+    for (const k of ["owns", "run"]) if (w[k] != null && !Array.isArray(w[k]) && typeof w[k] !== "string") errs.push(`\`${at}.${k}\` must be a list`);
+    for (const g of toList(w.owns)) if (!g.trim()) errs.push(`\`${at}.owns\` has an empty glob`);
+    if (w.expires != null && !/^\d{4}-\d{2}-\d{2}$/.test(String(w.expires))) errs.push(`\`${at}.expires\` must be a date, YYYY-MM-DD`);
+  }
+  return errs;
+}
+
+/** Globs per owner from `ownership-file`, so a repo that already maps paths → owners keeps ONE source of truth. */
+export function loadOwnership(root, settings) {
   const owned = new Map();
-  if (!config.ownershipFile) return owned;
+  if (!settings.ownershipFile) return owned;
   let data;
-  try { data = JSON.parse(readFileSync(resolve(root, config.ownershipFile), "utf8")); }
-  catch (e) { throw new Error(`ownershipFile ${config.ownershipFile}: ${e.message}`); }
+  try { data = JSON.parse(readFileSync(resolve(root, settings.ownershipFile), "utf8")); }
+  catch (e) { throw new Error(`ownership-file ${settings.ownershipFile}: ${e.message}`); }
   const rows = Array.isArray(data) ? data : data?.entries;
-  if (!Array.isArray(rows)) throw new Error(`ownershipFile ${config.ownershipFile}: expected an array or {entries: [...]}`);
+  if (!Array.isArray(rows)) throw new Error(`ownership-file ${settings.ownershipFile}: expected an array or {entries: [...]}`);
   for (const r of rows) {
     if (!r || typeof r.glob !== "string" || typeof r.owner !== "string" || !r.owner) continue; // null owner = unowned
     (owned.get(r.owner) || owned.set(r.owner, []).get(r.owner)).push(r.glob);
@@ -251,10 +298,8 @@ export function loadOwnership(root, config) {
   return owned;
 }
 
-/** Load every agent definition; wardens are the ones with a `warden:` frontmatter block. */
-export function loadAgents(root, config = loadConfig(root)) {
-  const owned = loadOwnership(root, config);
-  const dirs = [...config.agentDirs.map((d) => join(root, d)), join(PLUGIN_ROOT, "agents")];
+function readAgents(root, agentDirs) {
+  const dirs = [...agentDirs.map((d) => join(root, d)), join(PLUGIN_ROOT, "agents")];
   const seen = new Map();
   for (const dir of dirs) {
     if (!existsSync(dir)) continue;
@@ -265,26 +310,65 @@ export function loadAgents(root, config = loadConfig(root)) {
       catch (e) { parsed = { data: {}, body: "", error: e.message }; }
       const name = String(parsed.data.name || basename(f, ".md"));
       if (seen.has(name)) continue; // project definitions shadow plugin ones
-      const w = parsed.data.warden && typeof parsed.data.warden === "object" ? { ...parsed.data.warden } : null;
-      if (w) {
-        const o = config.authority?.[name] || {};
-        w.kind = w.kind || "domain";
-        w.edit = [...new Set([...toList(o.edit ?? w.edit), ...(owned.get(name) || [])])];
-        w.bash = o.bash ?? w.bash;
-        if (w.bash != null) w.bash = toList(w.bash);
-      }
-      seen.set(name, { name, file, data: parsed.data, body: parsed.body, warden: w, error: parsed.error });
+      seen.set(name, { name, file, data: parsed.data, body: parsed.body, error: parsed.error, bundled: dir === join(PLUGIN_ROOT, "agents"), legacyWarden: isMap(parsed.data.warden) });
     }
   }
   return [...seen.values()];
 }
 
-const toList = (v) => (v == null ? [] : Array.isArray(v) ? v.filter((x) => x != null).map(String) : [String(v)]);
+/**
+ * Load the team: `.claude/wardens.yaml` merged over the plugin's bundled defaults (`defaults.yaml`), plus
+ * `ownership-file` globs, plus every agent file. Never throws: problems are collected for `doctor`/`team`,
+ * and the valid parts still load, so one typo never silently disables the whole guard.
+ */
+export function loadTeam(root) {
+  const problems = [];
+  const file = join(root, CONFIG_PATH);
+  let raw = {};
+  const exists = existsSync(file);
+  if (exists) {
+    try { raw = parseYaml(readFileSync(file, "utf8")) ?? {}; }
+    catch (e) { problems.push(`cannot parse ${CONFIG_PATH}: ${e.message}`); }
+    problems.push(...validateTeamConfig(raw));
+  }
+  if (!isMap(raw)) raw = {};
+  const settings = defaultSettings();
+  if (["enforce", "warn"].includes(raw.mode)) settings.mode = raw.mode;
+  if (typeof raw["confidence-floor"] === "number") settings.confidenceFloor = raw["confidence-floor"];
+  if (typeof raw.ledger === "string") settings.ledger = raw.ledger;
+  if (typeof raw["ownership-file"] === "string") settings.ownershipFile = raw["ownership-file"];
+  if (Array.isArray(raw["agent-dirs"])) settings.agentDirs = toList(raw["agent-dirs"]);
+  settings.neverCommands = [...new Set([...BUILTIN_NEVER, ...toList(raw["never-run"])])];
+  settings.alwaysCommands = [...new Set([...BUILTIN_ALWAYS, ...toList(raw["always-run"])])];
 
-export function findWarden(agents, type) {
+  let owned = new Map();
+  try { owned = loadOwnership(root, settings); } catch (e) { problems.push(e.message); }
+
+  const defaultsFile = join(PLUGIN_ROOT, "defaults.yaml");
+  const bundled = existsSync(defaultsFile) ? parseYaml(readFileSync(defaultsFile, "utf8"))?.wardens ?? {} : {};
+  const declared = isMap(raw.wardens) ? raw.wardens : {};
+  const agents = readAgents(root, settings.agentDirs);
+  const wardens = new Map();
+  for (const name of new Set([...Object.keys(bundled), ...Object.keys(declared)])) {
+    const mine = isMap(declared[name]) ? declared[name] : {};
+    const entry = { ...(isMap(bundled[name]) ? bundled[name] : {}), ...mine };
+    wardens.set(name, {
+      name,
+      kind: KINDS.includes(entry.kind) ? entry.kind : "domain",
+      edit: [...new Set([...toList(entry.owns), ...(owned.get(name) || [])])],
+      bash: entry.run == null ? null : toList(entry.run),
+      expires: entry.expires == null ? null : String(entry.expires),
+      source: name in declared ? "project" : "bundled",
+      agent: agents.find((a) => a.name === name) || null,
+    });
+  }
+  return { root, file, exists, raw, settings, wardens, agents, owned, problems };
+}
+
+/** Resolve an agent type (possibly plugin-namespaced, e.g. `wardens:debrief-scribe`) to a warden. */
+export function findWarden(team, type) {
   if (!type) return null;
-  const short = String(type).split(":").pop();
-  return agents.find((a) => a.warden && (a.name === type || a.name === short)) || null;
+  return team.wardens.get(String(type)) || team.wardens.get(String(type).split(":").pop()) || null;
 }
 
 // ─── Authority guard ─────────────────────────────────────────────────────────
@@ -386,7 +470,7 @@ export function validateBrief(brief, w) {
 }
 
 /** Validate an UpwardReport. Returns a list of problems (empty = valid). */
-export function validateReport(r, config = DEFAULT_CONFIG) {
+export function validateReport(r, config = defaultSettings()) {
   if (!r) return ["no `upward-report:` block found as the last content of the response"];
   const errs = [];
   if (!STATUSES.includes(r.status)) errs.push(`\`status\` must be one of ${STATUSES.join(" | ")}`);
@@ -477,16 +561,16 @@ const deny = (reason) => process.stdout.write(JSON.stringify({ hookSpecificOutpu
 
 function hookPreTool(payload) {
   const root = projectDir(payload);
-  const config = loadConfig(root);
-  const agents = loadAgents(root, config);
+  const team = loadTeam(root);
+  const config = team.settings;
   const base = { session_id: payload.session_id, agent_id: payload.agent_id };
 
   // 1) Dispatch gate — a warden may only be spawned with a valid, authority-narrowing MissionBrief.
   if (payload.tool_name === "Agent" || payload.tool_name === "Task") {
-    const w = findWarden(agents, payload.tool_input?.subagent_type);
+    const w = findWarden(team, payload.tool_input?.subagent_type);
     if (!w) return;
     const brief = extractBlock(payload.tool_input?.prompt, "mission-brief", "first");
-    const errs = validateBrief(brief, w.warden && { ...w.warden, name: w.name });
+    const errs = validateBrief(brief, w);
     if (errs.length) {
       record(root, config, { ...base, event: "dispatch-rejected", warden: w.name, problems: errs });
       if (config.mode === "enforce") deny(`MissionBrief rejected for ${w.name}:\n- ${errs.join("\n- ")}\nFix the brief (see the mission-brief skill) and re-dispatch.`);
@@ -497,9 +581,9 @@ function hookPreTool(payload) {
   }
 
   // 2) Authority guard — tool calls made inside a warden.
-  const w = findWarden(agents, payload.agent_type);
+  const w = findWarden(team, payload.agent_type);
   if (!w) return;
-  const reason = checkToolCall({ ...w.warden, name: w.name }, payload.tool_name, payload.tool_input, root, config);
+  const reason = checkToolCall(w, payload.tool_name, payload.tool_input, root, config);
   if (!reason) return;
   record(root, config, { ...base, event: "deny", warden: w.name, tool: payload.tool_name, reason, enforced: config.mode === "enforce" });
   if (config.mode === "enforce") deny(`denied-by-authority (${w.name}): ${reason}. Do not work around this. Finish with an upward-report: status: denied-by-authority, naming the out-of-scope path/command in blockers.`);
@@ -507,8 +591,9 @@ function hookPreTool(payload) {
 
 function hookSubagentStop(payload) {
   const root = projectDir(payload);
-  const config = loadConfig(root);
-  const w = findWarden(loadAgents(root, config), payload.agent_type);
+  const team = loadTeam(root);
+  const config = team.settings;
+  const w = findWarden(team, payload.agent_type);
   if (!w) return;
   const report = extractBlock(lastAssistantText(payload), "upward-report", "last");
   const errs = validateReport(report, config);
@@ -532,16 +617,23 @@ function trackedFiles(root) {
   catch { return null; }
 }
 
+/** True when the repo still carries v0.2 config (frontmatter `warden:` blocks or .wardens/config.json). */
+export function hasLegacyConfig(root, team = loadTeam(root)) {
+  return existsSync(join(root, ".wardens", "config.json")) || team.agents.some((a) => !a.bundled && a.legacyWarden);
+}
+
 export function doctor(root, { today = new Date().toISOString().slice(0, 10) } = {}) {
-  const config = loadConfig(root);
-  let owned;
-  try { owned = loadOwnership(root, config); }
-  catch (e) { return { findings: [{ level: "error", agent: "config", msg: e.message }], wardens: 0, agents: 0 }; }
+  const team = loadTeam(root);
+  const lintPlugin = resolve(root) === resolve(PLUGIN_ROOT);
   // Lint the project's own definitions; bundled plugin agents are linted in the plugin's own CI (root === plugin root).
-  const agents = loadAgents(root, config).filter((a) => resolve(root) === resolve(PLUGIN_ROOT) || !a.file.startsWith(join(PLUGIN_ROOT, "agents")));
+  const agents = team.agents.filter((a) => lintPlugin || !a.bundled);
   const findings = [];
   const add = (level, agent, msg) => findings.push({ level, agent, msg });
-  if (config._error) add("error", "config", config._error);
+  for (const p of team.problems) add("error", CONFIG_PATH, p);
+  if (existsSync(join(root, ".wardens", "config.json")))
+    add("error", ".wardens/config.json", `superseded by ${CONFIG_PATH} — run \`warden migrate\``);
+  if (!team.exists && !lintPlugin)
+    add(hasLegacyConfig(root, team) ? "error" : "info", CONFIG_PATH, hasLegacyConfig(root, team) ? "missing, but v0.2 warden config was found — run `warden migrate`" : "missing — run `warden init` to start a team");
   const files = trackedFiles(root);
   const lineCount = new Map();
 
@@ -551,23 +643,24 @@ export function doctor(root, { today = new Date().toISOString().slice(0, 10) } =
     return null;
   };
 
-  const wardens = agents.filter((a) => a.warden);
+  const wardens = [...team.wardens.values()].filter((w) => lintPlugin || w.source === "project" || (w.agent && !w.agent.bundled));
+  const agentNames = team.agents.map((a) => a.name);
+  for (const w of wardens) {
+    if (!w.agent) { add("error", w.name, `declared in ${CONFIG_PATH} but there is no agent file .claude/agents/${w.name}.md${didYouMean(w.name, agentNames)}`); continue; }
+    if (w.kind === "domain" && !w.edit.length) add("error", w.name, "domain warden owns nothing — add `owns` globs (or an ownership-file row)");
+    const tools = String(w.agent.data.tools || "");
+    if (tools && w.edit.length && !/\b(Edit|Write|MultiEdit)\b/.test(tools)) add("warn", w.name, "owns paths but its agent has no Edit/Write tool");
+    if (tools && !w.edit.length && /\b(Edit|Write|MultiEdit)\b/.test(tools)) add("warn", w.name, "its agent has Edit/Write but the warden owns nothing (every edit will be denied)");
+    if (w.expires && w.expires < today) add("error", w.name, `pilot expired ${w.expires} — ratify (remove \`expires\`) or remove the warden`);
+    if (w.bash == null) add("info", w.name, "no `run` allowlist — only never-run commands and redirects are guarded");
+  }
   for (const a of agents) {
     if (a.error) { add("error", a.name, `cannot parse: ${a.error}`); continue; }
+    if (a.legacyWarden) add("error", a.name, `has a v0.2 \`warden:\` frontmatter block — authority now lives in ${CONFIG_PATH}; run \`warden migrate\``);
+    const isWarden = team.wardens.has(a.name);
     const looksLikeWarden = /-warden$|scribe$/.test(a.name) || /upward-report|mission-brief/i.test(a.body);
-    if (!a.warden) {
-      if (looksLikeWarden) add("warn", a.name, "authority is prose-only (no `warden:` frontmatter) — hooks cannot enforce it");
-      else continue;
-    } else {
-      const w = a.warden;
-      if (!["domain", "specialist"].includes(w.kind)) add("error", a.name, `warden.kind must be domain | specialist (got ${w.kind})`);
-      if (w.kind === "domain" && !w.edit.length) add("error", a.name, "domain warden has no `warden.edit` globs");
-      const tools = String(a.data.tools || "");
-      if (tools && w.edit.length && !/\b(Edit|Write|MultiEdit)\b/.test(tools)) add("warn", a.name, "has edit authority but no Edit/Write tool");
-      if (tools && !w.edit.length && /\b(Edit|Write|MultiEdit)\b/.test(tools)) add("warn", a.name, "has Edit/Write tool but no edit authority (every edit will be denied)");
-      if (w.expires && String(w.expires) < today) add("error", a.name, `pilot expired ${w.expires} — ratify (remove \`expires\`) or remove the warden`);
-      if (w.bash == null) add("info", a.name, "no `warden.bash` allowlist — only never-commands and redirects are guarded");
-    }
+    if (!isWarden && looksLikeWarden && !a.legacyWarden) add("warn", a.name, `looks like a warden but isn't declared in ${CONFIG_PATH} — its authority is not enforced`);
+    if (!isWarden && !looksLikeWarden) continue;
     // Stale anchors: backticked repo paths (optionally :line) mentioned in the primer.
     const seen = new Set();
     // Lines that document a deliberate deletion ("removed in W25 — do not recreate") are tombstones, not anchors.
@@ -576,7 +669,7 @@ export function doctor(root, { today = new Date().toISOString().slice(0, 10) } =
     for (const m of scanned.matchAll(/`([\w@.\-]+(?:\/[\w@.\-]+)+\.[A-Za-z]{1,6})(?::(\d+))?(?:-\d+)?`/g)) {
       const [, p, line] = m;
       if (seen.has(p + line)) continue; seen.add(p + line);
-      if (p.startsWith(".wardens/")) continue; // runtime config/outputs, may not exist yet
+      if (p.startsWith(".wardens/") || p === CONFIG_PATH) continue; // runtime state / the team file (validated separately)
       const hit = exists(p);
       if (!hit) { add("warn", a.name, `stale anchor: \`${p}\` not found`); continue; }
       if (line) {
@@ -585,34 +678,204 @@ export function doctor(root, { today = new Date().toISOString().slice(0, 10) } =
       }
     }
   }
-  for (const owner of owned.keys())
-    if (!wardens.some((a) => a.name === owner)) add("warn", "config", `ownershipFile names owner \`${owner}\` but no agent with a \`warden:\` block has that name — its paths are unenforced`);
+  for (const owner of team.owned.keys())
+    if (!team.wardens.has(owner)) add("warn", "ownership-file", `names owner \`${owner}\`, which isn't declared in ${CONFIG_PATH} — its paths are unenforced`);
   // Ownership overlap between domain wardens → ambiguous routing.
-  const domain = wardens.filter((a) => a.warden.kind === "domain");
+  const domain = wardens.filter((w) => w.kind === "domain");
   for (let x = 0; x < domain.length; x++) for (let y = x + 1; y < domain.length; y++)
-    for (const ga of domain[x].warden.edit) for (const gb of domain[y].warden.edit)
-      if (globsOverlap(ga, gb)) add("error", `${domain[x].name} × ${domain[y].name}`, `edit authority overlaps (${ga} ∩ ${gb}) — routing is ambiguous`);
+    for (const ga of domain[x].edit) for (const gb of domain[y].edit)
+      if (globsOverlap(ga, gb)) add("error", `${domain[x].name} × ${domain[y].name}`, `owned paths overlap (${ga} ∩ ${gb}) — routing is ambiguous`);
   return { findings, wardens: wardens.length, agents: agents.length };
 }
 
-// ─── Scaffolding ─────────────────────────────────────────────────────────────
+// ─── wardens.yaml writing (init / new / migrate) ─────────────────────────────
 
-function scaffold(root, name, { kind = "domain", edit = [], test = [] }) {
-  if (!/^[a-z][a-z0-9-]*$/.test(name)) throw new Error("name must be kebab-case");
-  if (kind === "domain" && !edit.length) throw new Error("a domain warden needs at least one --edit glob");
-  const tpl = join(PLUGIN_ROOT, "templates", `${kind}.md`);
-  if (!existsSync(tpl)) throw new Error(`no template for kind ${kind}`);
-  const out = join(root, ".claude", "agents", `${name}.md`);
-  if (existsSync(out)) throw new Error(`${relative(root, out)} already exists`);
-  const yamlList = (xs, pad) => (xs.length ? xs.map((x) => `\n${pad}- ${JSON.stringify(x)}`).join("") : " []");
-  const text = readFileSync(tpl, "utf8")
-    .replaceAll("{{name}}", name)
-    .replaceAll("{{edit-yaml}}", yamlList(edit, "    "))
-    .replaceAll("{{bash-yaml}}", yamlList(test, "    "))
-    .replaceAll("{{edit-list}}", edit.map((g) => `\`${g}\``).join(", ") || "none");
-  mkdirSync(dirname(out), { recursive: true });
-  writeFileSync(out, text);
-  return out;
+/** A YAML scalar: plain when safe, JSON-quoted otherwise (globs starting with `*`, `: `, ` #`, ...). */
+export function yamlScalar(s) {
+  s = String(s);
+  const plainSafe = /^[A-Za-z0-9_./~+=$-]/.test(s) && !/^-|: |\s#|^\s|\s$/.test(s) && !/^(true|false|null|~|yes|no|on|off|-?\d+(\.\d+)?)$/i.test(s);
+  return plainSafe ? s : JSON.stringify(s);
+}
+
+/** The YAML lines for one warden entry under `wardens:`. */
+export function emitWarden(name, { kind = "domain", owns = [], run = null, expires = null } = {}) {
+  const lines = [`  ${name}:`, `    kind: ${kind}`];
+  const list = (key, xs) => (xs.length ? [`    ${key}:`, ...xs.map((x) => `      - ${yamlScalar(x)}`)] : [`    ${key}: []`]);
+  if (owns.length) lines.push(...list("owns", owns)); // empty = globs come from ownership-file (doctor flags a domain warden that owns nothing)
+  if (run != null) lines.push(...list("run", run));
+  if (expires) lines.push(`    expires: ${expires}`);
+  return lines.join("\n") + "\n";
+}
+
+/** The canonical wardens.yaml text. `wardens` is always the last section, so `warden new` can append to it. */
+export function renderConfig({ mode = "warn", confidenceFloor = null, ledger = null, ownershipFile = null, agentDirs = null, neverRun = [], alwaysRun = [] } = {}, wardens = {}) {
+  const out = [
+    `# yaml-language-server: $schema=${SCHEMA_URL}`,
+    "#",
+    "# The warden team for this repo: who owns what, and what each may run. One file, committed.",
+    "# Agent prompts (domain primers) live in .claude/agents/<name>.md. Runtime state lives in .wardens/ (gitignored).",
+    "# Docs: https://github.com/tylerjrbuell/wardens",
+    "version: 1",
+    "",
+    "# enforce: deny out-of-authority tool calls and invalid briefs/reports.  warn: record them only (start here).",
+    `mode: ${mode}`,
+    "",
+  ];
+  const opt = (comment, key, sample, value) => {
+    out.push(`# ${comment}`);
+    out.push(value == null ? `# ${key}: ${sample}` : `${key}: ${typeof value === "number" ? value : yamlScalar(value)}`, "");
+  };
+  opt("Confidence at or above this must be backed by `verification` in the UpwardReport (default 0.7).", "confidence-floor", "0.7", confidenceFloor);
+  opt("Read owned globs from an existing [{glob, owner}] map instead of listing them here.", "ownership-file", "tools/ownership.json", ownershipFile);
+  if (ledger) opt("Where the hooks write the outcome ledger.", "ledger", "", ledger);
+  if (agentDirs) { out.push("# Where agent files live (the plugin's bundled agents are always available).", "agent-dirs:", ...agentDirs.map((d) => `  - ${yamlScalar(d)}`), ""); }
+  out.push("# Commands no warden may run, on top of the built-ins (git commit/push/tag/rebase/reset --hard, *publish).");
+  out.push(...(neverRun.length ? ["never-run:", ...neverRun.map((c) => `  - ${yamlScalar(c)}`)] : ["# never-run:", "#   - terraform apply"]), "");
+  if (alwaysRun.length) out.push("# Read-only commands every warden may run, on top of the built-ins (ls, cat, grep, git diff/log/show...).", "always-run:", ...alwaysRun.map((c) => `  - ${yamlScalar(c)}`), "");
+  out.push("wardens:");
+  const names = Object.keys(wardens);
+  if (!names.length) {
+    out.push(
+      "  # api-warden:",
+      "  #   kind: domain             # domain: owns code | specialist: writes only its own reports",
+      "  #   owns:                    # paths it may edit (enforced)",
+      "  #     - services/api/**",
+      "  #   run:                     # commands it may run, prefix-matched (omit: only never-run is guarded)",
+      "  #     - pytest services/api",
+      "  #   expires: 2027-03-31      # optional pilot window; `warden doctor` fails after it",
+      "",
+    );
+  }
+  return out.join("\n") + (names.length ? "\n" + names.map((n) => emitWarden(n, wardens[n])).join("\n") : "");
+}
+
+function ensureGitignored(root) {
+  const gi = join(root, ".gitignore");
+  const text = existsSync(gi) ? readFileSync(gi, "utf8") : "";
+  if (/^\/?\.wardens\/?\s*$/m.test(text)) return false;
+  writeFileSync(gi, text + (text && !text.endsWith("\n") ? "\n" : "") + "\n# wardens runtime state (outcome ledger)\n.wardens/\n");
+  return true;
+}
+
+/** `warden init`: write a commented starter wardens.yaml and gitignore .wardens/. */
+export function initTeam(root, { mode = "warn" } = {}) {
+  const file = join(root, CONFIG_PATH);
+  if (existsSync(file)) throw new Error(`${CONFIG_PATH} already exists`);
+  if (hasLegacyConfig(root)) throw new Error("this repo has v0.2 warden config — run `warden migrate` instead of `init`");
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, renderConfig({ mode }));
+  return { file, gitignored: ensureGitignored(root) };
+}
+
+/** `warden new`: append a warden to wardens.yaml and create its agent file if there isn't one. */
+export function addWarden(root, name, { kind = "domain", owns = [], run = null } = {}) {
+  if (!/^[a-z][a-z0-9-]*$/.test(name)) throw new Error("warden names are kebab-case, e.g. api-warden");
+  if (!KINDS.includes(kind)) throw new Error(`--kind must be ${KINDS.join(" | ")}`);
+  if (kind === "domain" && !owns.length) throw new Error("a domain warden needs at least one --owns glob");
+  const file = join(root, CONFIG_PATH);
+  let created = false;
+  if (!existsSync(file)) { initTeam(root, {}); created = true; }
+  const before = loadTeam(root);
+  if (isMap(before.raw.wardens) && name in before.raw.wardens) throw new Error(`${name} is already declared in ${CONFIG_PATH}`);
+  const entry = emitWarden(name, { kind, owns, run });
+  const original = readFileSync(file, "utf8");
+  let text = original;
+  const tops = [...text.matchAll(/^([A-Za-z][\w-]*):/gm)].map((m) => m[1]);
+  if (!tops.includes("wardens")) text = text.trimEnd() + "\n\nwardens:\n";
+  else if (tops.at(-1) !== "wardens") throw new Error(`\`wardens:\` isn't the last section of ${CONFIG_PATH}, so it can't be appended to safely. Add this under \`wardens:\` yourself:\n\n${entry}`);
+  text = text.replace(/^wardens:[ \t]*\{\s*\}[ \t]*$/m, "wardens:");
+  writeFileSync(file, text.trimEnd() + "\n" + (text.trimEnd().endsWith("wardens:") ? "" : "\n") + entry);
+  const after = loadTeam(root);
+  const w = after.wardens.get(name);
+  if (!w || w.source !== "project" || owns.some((g) => !w.edit.includes(g))) {
+    writeFileSync(file, original); // roll back the append
+    throw new Error(`appending ${name} did not parse back cleanly; add it by hand:\n\n${entry}`);
+  }
+  let agentFile = w.agent && !w.agent.bundled ? w.agent.file : null;
+  let createdAgent = false;
+  if (!agentFile) {
+    const tpl = join(PLUGIN_ROOT, "templates", `${kind}.md`);
+    agentFile = join(root, after.settings.agentDirs[0] || ".claude/agents", `${name}.md`);
+    const scope = owns.map((g) => `\`${g}\``).join(", ") || "its reports";
+    mkdirSync(dirname(agentFile), { recursive: true });
+    writeFileSync(agentFile, readFileSync(tpl, "utf8").replaceAll("{{name}}", name).replaceAll("{{owns}}", scope));
+    createdAgent = true;
+  }
+  return { file, created, agentFile, createdAgent };
+}
+
+/** Remove a top-level `warden:` block from an agent file's frontmatter (v0.2 → v0.3). */
+export function stripLegacyBlock(text) {
+  const m = text.match(/^(---\n)([\s\S]*?)(\n---)/);
+  if (!m) return text;
+  const lines = m[2].split("\n");
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (/^warden:\s*(#.*)?$/.test(lines[i])) {
+      while (i + 1 < lines.length && (lines[i + 1].trim() === "" || /^\s/.test(lines[i + 1]))) i++;
+      continue;
+    }
+    out.push(lines[i]);
+  }
+  return m[1] + out.join("\n") + m[3] + text.slice(m[0].length);
+}
+
+/** `warden migrate`: v0.2 frontmatter blocks + .wardens/config.json → one .claude/wardens.yaml. */
+export function migrate(root, { dryRun = false } = {}) {
+  const file = join(root, CONFIG_PATH);
+  if (existsSync(file)) throw new Error(`${CONFIG_PATH} already exists — nothing to migrate into`);
+  const cfgFile = join(root, ".wardens", "config.json");
+  let legacy = {};
+  if (existsSync(cfgFile)) legacy = JSON.parse(readFileSync(cfgFile, "utf8"));
+  const agentDirs = Array.isArray(legacy.agentDirs) ? legacy.agentDirs : [".claude/agents"];
+  const agents = readAgents(root, agentDirs).filter((a) => !a.bundled);
+  const wardens = {};
+  for (const a of agents.filter((x) => x.legacyWarden)) {
+    const w = a.data.warden;
+    wardens[a.name] = { kind: KINDS.includes(w.kind) ? w.kind : "domain", owns: toList(w.edit), run: w.bash == null ? null : toList(w.bash), expires: w.expires ? String(w.expires) : null };
+  }
+  for (const [name, o] of Object.entries(isMap(legacy.authority) ? legacy.authority : {})) {
+    const w = (wardens[name] ||= { kind: "specialist", owns: [], run: null, expires: null });
+    if (o.edit) w.owns = toList(o.edit);
+    if (o.bash) w.run = toList(o.bash);
+  }
+  const notes = [];
+  const extra = (list, builtins, label) => {
+    if (!Array.isArray(list)) return [];
+    const dropped = builtins.filter((b) => !list.includes(b));
+    if (dropped.length) notes.push(`${label}: v0.3 always includes the built-ins; your config had dropped ${dropped.join(", ")}`);
+    return list.filter((c) => !builtins.includes(c));
+  };
+  const text = renderConfig({
+    mode: legacy.mode === "warn" ? "warn" : "enforce",
+    confidenceFloor: typeof legacy.confidenceFloor === "number" && legacy.confidenceFloor !== 0.7 ? legacy.confidenceFloor : null,
+    ledger: legacy.ledger && legacy.ledger !== ".wardens/ledger.jsonl" ? legacy.ledger : null,
+    ownershipFile: legacy.ownershipFile || null,
+    agentDirs: Array.isArray(legacy.agentDirs) && JSON.stringify(legacy.agentDirs) !== JSON.stringify([".claude/agents"]) ? legacy.agentDirs : null,
+    neverRun: extra(legacy.neverCommands, BUILTIN_NEVER, "never-run"),
+    alwaysRun: extra(legacy.alwaysCommands, BUILTIN_ALWAYS, "always-run"),
+  }, wardens);
+  const stripped = agents.filter((a) => a.legacyWarden).map((a) => a.file);
+  if (dryRun) return { text, stripped, removedConfig: existsSync(cfgFile), notes, dryRun };
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, text);
+  for (const f of stripped) writeFileSync(f, stripLegacyBlock(readFileSync(f, "utf8")));
+  const removedConfig = existsSync(cfgFile);
+  if (removedConfig) unlinkSync(cfgFile);
+  const gitignored = ensureGitignored(root);
+  return { text, file, stripped, removedConfig, notes, gitignored };
+}
+
+// ─── Team view ───────────────────────────────────────────────────────────────
+
+/** Rows for `warden team`: one per warden with its authority and (when the ledger has data) its record. */
+export function teamRows(team) {
+  const stats = new Map(computeStats(readLedger(team.root, team.settings)).map((s) => [s.warden, s]));
+  return [...team.wardens.values()].map((w) => ({
+    name: w.name, kind: w.kind, owns: w.edit, run: w.bash, expires: w.expires, source: w.source,
+    agent: !w.agent ? null : w.agent.bundled ? `plugin: agents/${basename(w.agent.file)}` : relative(team.root, w.agent.file),
+    missions: stats.get(w.name)?.dispatches ?? 0, firstPass: stats.get(w.name)?.firstAttemptRate ?? null,
+  }));
 }
 
 // ─── CLI ─────────────────────────────────────────────────────────────────────
@@ -641,18 +904,72 @@ function main(argv) {
         if (f._[0] === "pre-tool") hookPreTool(payload);
         else if (f._[0] === "subagent-stop") hookSubagentStop(payload);
       } catch (e) {
-        record(projectDir(payload), loadConfig(projectDir(payload)), { event: "hook-error", hook: f._[0], error: String(e?.stack || e) });
+        record(projectDir(payload), loadTeam(projectDir(payload)).settings, { event: "hook-error", hook: f._[0], error: String(e?.stack || e) });
       }
       return 0; // fail open
+    }
+    case "init": {
+      try {
+        const mode = f.mode === "enforce" ? "enforce" : "warn";
+        const { file, gitignored } = initTeam(root, { mode });
+        console.log(`created ${relative(root, file)} (mode: ${mode})${gitignored ? "\nadded .wardens/ to .gitignore" : ""}`);
+        console.log(`next: warden new <name> --owns "<glob>" --run "<test command>"`);
+        return 0;
+      } catch (e) { console.error(`✗ ${e.message}`); return 1; }
+    }
+    case "new": {
+      const name = f._[0];
+      if (!name) { console.error('usage: warden new <name> --owns "<glob>" [--owns "<glob>"] [--run "<cmd>"] [--kind domain|specialist]'); return 2; }
+      const owns = [].concat(f.owns ?? f.edit ?? []);
+      const run = f.run ?? f.test;
+      try {
+        const r = addWarden(root, name, { kind: f.kind || "domain", owns, run: run == null ? null : [].concat(run) });
+        if (r.created) console.log(`created ${CONFIG_PATH}`);
+        console.log(`added ${name} to ${CONFIG_PATH}`);
+        console.log(r.createdAgent ? `created ${relative(root, r.agentFile)}: write its domain primer, then run \`warden doctor\`` : `using existing agent ${relative(root, r.agentFile)}`);
+        return 0;
+      } catch (e) { console.error(`✗ ${e.message}`); return 1; }
+    }
+    case "team": {
+      const team = loadTeam(root);
+      const rows = teamRows(team);
+      if (f.json) { console.log(JSON.stringify({ config: team.exists ? CONFIG_PATH : null, settings: team.settings, wardens: rows, problems: team.problems }, null, 2)); return 0; }
+      const s = team.settings;
+      console.log(`${team.exists ? CONFIG_PATH : "(no wardens.yaml; bundled defaults only)"} · mode: ${s.mode} · confidence floor: ${s.confidenceFloor}${s.ownershipFile ? ` · ownership-file: ${s.ownershipFile}` : ""}\n`);
+      const pct = (x) => (x == null ? "—" : `${Math.round(x * 100)}%`);
+      const owns = (r) => (r.owns.length ? r.owns[0] + (r.owns.length > 1 ? ` +${r.owns.length - 1}` : "") : "—");
+      const width = Math.max(14, ...rows.map((r) => r.name.length)) + 2;
+      const ownsWidth = Math.max(8, ...rows.map((r) => owns(r).length)) + 2;
+      console.log("warden".padEnd(width) + "kind".padEnd(12) + "owns".padEnd(ownsWidth) + "run".padEnd(6) + "missions".padEnd(10) + "1st-pass".padEnd(10) + "agent");
+      for (const r of rows)
+        console.log(r.name.padEnd(width) + r.kind.padEnd(12) + owns(r).padEnd(ownsWidth) + (r.run == null ? "any" : String(r.run.length)).padEnd(6) + String(r.missions).padEnd(10) + pct(r.firstPass).padEnd(10) + (r.agent ?? "✗ missing agent file") + (r.expires ? `  · pilot until ${r.expires}` : ""));
+      console.log(`\nnever-run: ${s.neverCommands.join(", ")}`);
+      if (team.problems.length || !team.exists) console.log(`\n${team.problems.length ? `${team.problems.length} config problem(s)` : `no ${CONFIG_PATH}`}: run \`warden doctor\``);
+      return 0;
+    }
+    case "migrate": {
+      try {
+        const r = migrate(root, { dryRun: !!f["dry-run"] });
+        if (r.dryRun) { process.stdout.write(r.text); console.error(`\n(dry run) would write ${CONFIG_PATH}, strip \`warden:\` from ${r.stripped.length} agent file(s)${r.removedConfig ? ", and delete .wardens/config.json" : ""}`); }
+        else {
+          console.log(`wrote ${CONFIG_PATH}`);
+          for (const s of r.stripped) console.log(`moved authority out of ${relative(root, s)}`);
+          if (r.removedConfig) console.log("deleted .wardens/config.json (folded into wardens.yaml)");
+          if (r.gitignored) console.log("added .wardens/ to .gitignore");
+          console.log("next: warden doctor");
+        }
+        for (const n of r.notes) console.error(`note: ${n}`);
+        return 0;
+      } catch (e) { console.error(`✗ ${e.message}`); return 1; }
     }
     case "check": {
       const text = readStdin();
       const kind = f._[0];
       if (kind !== "brief" && kind !== "report") { console.error("usage: warden check brief|report < file"); return 2; }
-      const config = loadConfig(root);
+      const team = loadTeam(root);
       let w = null;
-      if (kind === "brief" && f.warden) { const a = findWarden(loadAgents(root, config), f.warden); w = a && { ...a.warden, name: a.name }; if (!w) { console.error(`unknown warden ${f.warden}`); return 2; } }
-      const errs = kind === "brief" ? validateBrief(extractBlock(text, "mission-brief", "first"), w) : validateReport(extractBlock(text, "upward-report", "last"), config);
+      if (kind === "brief" && f.warden) { w = findWarden(team, f.warden); if (!w) { console.error(`unknown warden ${f.warden}${didYouMean(String(f.warden), [...team.wardens.keys()])}`); return 2; } }
+      const errs = kind === "brief" ? validateBrief(extractBlock(text, "mission-brief", "first"), w) : validateReport(extractBlock(text, "upward-report", "last"), team.settings);
       if (!errs.length) { console.log(`✓ valid ${kind}`); return 0; }
       for (const e of errs) console.log(`✗ ${e}`);
       return 1;
@@ -663,11 +980,11 @@ function main(argv) {
       for (const x of findings.filter((x) => f.verbose || x.level !== "info")) console.log(`${icon[x.level]} [${x.agent}] ${x.msg}`);
       const errors = findings.filter((x) => x.level === "error").length;
       const warns = findings.filter((x) => x.level === "warn").length;
-      console.log(`\n${wardens} warden(s) of ${agents} agent file(s) checked — ${errors} error(s), ${warns} warning(s)`);
+      console.log(`\n${wardens} warden(s), ${agents} agent file(s) checked — ${errors} error(s), ${warns} warning(s)`);
       return errors || (f.strict && warns) ? 1 : 0;
     }
     case "stats": {
-      const stats = computeStats(readLedger(root, loadConfig(root)));
+      const stats = computeStats(readLedger(root, loadTeam(root).settings));
       if (f.json) { console.log(JSON.stringify(stats, null, 2)); return 0; }
       if (!stats.length) { console.log("ledger is empty — no warden dispatches recorded yet"); return 0; }
       const pct = (x) => (x == null ? "  —" : `${Math.round(x * 100)}%`.padStart(4));
@@ -678,26 +995,17 @@ function main(argv) {
     }
     case "route": {
       if (!f._.length) { console.error("usage: warden route <path...>"); return 2; }
-      const wardens = loadAgents(root).filter((a) => a.warden);
+      const wardens = [...loadTeam(root).wardens.values()];
       let bad = 0;
       for (const p of f._) {
-        const owners = wardens.filter((a) => matchesAny(a.warden.edit, p.replace(/^\.\//, ""))).map((a) => a.name);
+        const owners = wardens.filter((w) => matchesAny(w.edit, p.replace(/^\.\//, ""))).map((w) => w.name);
         if (owners.length !== 1) bad++;
         console.log(`${p} → ${owners.length ? owners.join(", ") : "UNOWNED (parent owns it, or scaffold a warden)"}${owners.length > 1 ? "  ✗ ambiguous" : ""}`);
       }
       return bad ? 1 : 0;
     }
-    case "new": {
-      const name = f._[0];
-      if (!name) { console.error("usage: warden new <name> --edit <glob> [--edit <glob>] [--kind domain|specialist] [--test <cmd>]"); return 2; }
-      try {
-        const out = scaffold(root, name, { kind: f.kind || "domain", edit: [].concat(f.edit || []), test: [].concat(f.test || []) });
-        console.log(`created ${relative(root, out)} — fill in the domain primer, then run \`warden doctor\``);
-        return 0;
-      } catch (e) { console.error(`✗ ${e.message}`); return 1; }
-    }
     default:
-      console.log(readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").slice(1, 15).map((l) => l.replace(/^\/\/ ?/, "")).join("\n"));
+      console.log(readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").slice(1, 18).map((l) => l.replace(/^\/\/ ?/, "")).join("\n"));
       return cmd ? 2 : 0;
   }
 }
