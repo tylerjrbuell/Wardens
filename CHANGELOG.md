@@ -13,6 +13,7 @@
 - `doctor` adds: declared wardens with no agent file, agents that look like wardens but aren't declared, and leftover v0.2 config.
 - Examples: one complete `examples/wardens.yaml` plus `examples/variants/` (trial, strict, ownership map) replace `examples/configs/*.json`.
 - Fix: a quoted YAML value followed by a `# comment` kept the comment in the value.
+- Built-in `never-run` now also covers `git stash`, `git clean`, `git checkout --` and `git restore`: parallel wardens share one working tree, and each of these takes or destroys another agent's uncommitted work. The examples no longer recommend stash-and-rerun baselines.
 
 ## 0.2.0
 

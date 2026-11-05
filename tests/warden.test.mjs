@@ -170,6 +170,15 @@ test("loadTeam reads .claude/wardens.yaml: settings, built-in lists, wardens, ag
   assert.equal(findWarden(team, "wardens:pay-warden").name, "pay-warden"); // plugin-namespaced agent types
 });
 
+test("built-in never-run protects the shared working tree for every warden", () => {
+  const root = fixture({ yaml: PAY_YAML.replace("    run:\n      - npm test\n", "    run:\n      - \"*\"\n") });
+  const team = loadTeam(root);
+  const w = findWarden(team, "pay-warden");
+  for (const cmd of ["git stash", "git stash pop", "git clean -fd", "git reset --hard HEAD", "git checkout -- src/a.ts", "git restore src/a.ts"])
+    assert.match(checkToolCall(w, "Bash", { command: cmd }, root, team.settings), /reserved for the parent/, cmd);
+  assert.equal(checkToolCall(w, "Bash", { command: "git checkout -b scratch" }, root, team.settings), null, "only the destructive forms are banned");
+});
+
 test("typos and bad values are reported with did-you-mean; valid parts still load", () => {
   const errs = validateTeamConfig(parseYaml("mood: warn\nmode: loud\nconfidence-floor: 7\nwardens:\n  Pay_Warden:\n    own:\n      - x/**\n  api-warden:\n    kind: domian\n    expires: soon\n"));
   const text = errs.join("\n");

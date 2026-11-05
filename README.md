@@ -96,7 +96,7 @@ version: 1
 
 mode: enforce          # start new teams with `warn` for a week, then switch
 
-never-run:             # on top of the built-ins (git commit/push/tag/rebase/reset --hard, *publish)
+never-run:             # on top of the built-ins (git commit/push/tag/rebase, git stash/clean/reset --hard/restore, *publish)
   - terraform apply
   - terraform destroy
   - kubectl delete
@@ -111,7 +111,6 @@ wardens:
       - ruff check services/api
       - ruff format services/api
       - mypy services/api
-      - git stash          # stash-and-rerun baselines for "pre-existing failure" claims
 ```
 
 That excerpt is from [`examples/wardens.yaml`](examples/wardens.yaml), a full nine-warden team. The schema comment on the second line gives you autocomplete and inline validation in any editor running the YAML language server.
@@ -302,6 +301,7 @@ node warden.mjs doctor --strict
 - **Pilot new wardens with `expires`.** Ratify from data or delete. Don't let them accumulate.
 - **Primers hold non-obvious truth only**: invariants, incidents, "never X because Y". Anchor everything, and let `doctor` keep the anchors honest.
 - **Specialists don't patch.** Evidence, release, and probe roles find problems and name the owning warden. Domain wardens make the fix.
+- **Parallel wardens share one working tree.** That is why `git stash`, `git clean`, `git reset --hard`, `git checkout --` and `git restore` are built-in `never-run`: each silently takes or destroys someone else's uncommitted work. To prove a failure is pre-existing, run the check on the base branch in a separate worktree. To prove a test pins a fix, cut the fix in source, watch the test fail, and restore it.
 
 ## License
 

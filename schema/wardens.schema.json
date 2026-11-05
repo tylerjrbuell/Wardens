@@ -24,7 +24,7 @@
     },
     "never-run": {
       "type": "array", "items": { "type": "string" },
-      "description": "Commands no warden may run, added to the built-ins (git commit, git push, git tag, git rebase, git reset --hard, npm/pnpm/yarn/bun publish). Applies whatever a warden's `run` says."
+      "description": "Commands no warden may run, added to the built-ins (git commit/push/tag/rebase; git stash/clean/reset --hard/checkout --/restore, because the working tree is shared with other agents; npm/pnpm/yarn/bun publish). Applies whatever a warden's `run` says."
     },
     "always-run": {
       "type": "array", "items": { "type": "string" },

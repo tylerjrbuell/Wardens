@@ -38,7 +38,7 @@ version: 1
 mode: warn                      # enforce | warn
 # confidence-floor: 0.7         # reports at/above this need `verification`
 # ownership-file: tools/ownership.json   # read owned globs from an existing [{glob, owner}] map
-never-run:                      # added to the built-ins (git commit/push/tag/rebase/reset --hard, *publish)
+never-run:                      # added to the built-ins (git commit/push/tag/rebase, git stash/clean/reset --hard/restore, *publish)
   - terraform apply
 # always-run: []                # added to the built-in read-only commands
 # ledger: .wardens/ledger.jsonl

@@ -6,7 +6,7 @@ version: 1
 
 mode: enforce          # start new teams with `warn` for a week, then switch
 
-never-run:             # on top of the built-ins (git commit/push/tag/rebase/reset --hard, *publish)
+never-run:             # on top of the built-ins (git commit/push/tag/rebase, git stash/clean/reset --hard/restore, *publish)
   - terraform apply
   - terraform destroy
   - kubectl delete
@@ -22,7 +22,6 @@ wardens:
       - ruff check services/api
       - ruff format services/api
       - mypy services/api
-      - git stash          # stash-and-rerun baselines for "pre-existing failure" claims
 
   web-warden:              # partial ownership: src + tests, NOT package.json or build config
     kind: domain

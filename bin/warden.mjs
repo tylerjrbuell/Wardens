@@ -225,8 +225,16 @@ export function projectDir(payload) {
 export const CONFIG_PATH = ".claude/wardens.yaml";
 export const SCHEMA_URL = "https://raw.githubusercontent.com/tylerjrbuell/wardens/main/schema/wardens.schema.json";
 
-// Integration + release belong to the parent thread: no warden ever runs these. `never-run` adds to this list.
-export const BUILTIN_NEVER = ["git commit", "git push", "git tag", "git rebase", "git reset --hard", "npm publish", "pnpm publish", "yarn publish", "bun publish"];
+// No warden ever runs these. `never-run` adds to this list.
+//  - integration + release belong to the parent: commit, push, tag, rebase, publish
+//  - the working tree is shared with the parent and with parallel wardens: stash, clean, reset --hard, checkout --,
+//    restore would silently take or destroy someone else's uncommitted work (learned dogfooding: reactive-agents-ts
+//    banned `git stash` after concurrent agents lost changes). Prove "pre-existing" on a separate worktree instead.
+export const BUILTIN_NEVER = [
+  "git commit", "git push", "git tag", "git rebase",
+  "git stash", "git clean", "git reset --hard", "git checkout --", "git restore",
+  "npm publish", "pnpm publish", "yarn publish", "bun publish",
+];
 // Read-only commands every warden may run whatever its `run` allowlist says. `always-run` adds to this list.
 export const BUILTIN_ALWAYS = ["cd", "pwd", "ls", "cat", "head", "tail", "wc", "grep", "rg", "echo", "git status", "git diff", "git log", "git show", "git ls-files", "git blame"];
 
@@ -736,7 +744,7 @@ export function renderConfig({ mode = "warn", confidenceFloor = null, ledger = n
   opt("Read owned globs from an existing [{glob, owner}] map instead of listing them here.", "ownership-file", "tools/ownership.json", ownershipFile);
   if (ledger) opt("Where the hooks write the outcome ledger.", "ledger", "", ledger);
   if (agentDirs) { out.push("# Where agent files live (the plugin's bundled agents are always available).", "agent-dirs:", ...agentDirs.map((d) => `  - ${yamlScalar(d)}`), ""); }
-  out.push("# Commands no warden may run, on top of the built-ins (git commit/push/tag/rebase/reset --hard, *publish).");
+  out.push("# Commands no warden may run, on top of the built-ins (git commit/push/tag/rebase, git stash/clean/reset --hard/restore, *publish).");
   out.push(...(neverRun.length ? ["never-run:", ...neverRun.map((c) => `  - ${yamlScalar(c)}`)] : ["# never-run:", "#   - terraform apply"]), "");
   if (alwaysRun.length) out.push("# Read-only commands every warden may run, on top of the built-ins (ls, cat, grep, git diff/log/show...).", "always-run:", ...alwaysRun.map((c) => `  - ${yamlScalar(c)}`), "");
   out.push("wardens:");
