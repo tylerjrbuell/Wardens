@@ -141,6 +141,9 @@ test("checkToolCall enforces edit globs, never-commands, redirects, bash allowli
   assert.equal(checkToolCall(w, "Bash", { command: "npm test -- services/payments 2>&1 | ls" }, root, cfg), null);
   assert.match(checkToolCall(w, "Bash", { command: "npm test && git commit -m x" }, root, cfg), /reserved for the parent/);
   assert.match(checkToolCall(w, "Bash", { command: "rm -rf services" }, root, cfg), /not in this warden's bash allowlist/);
+  assert.equal(checkToolCall(w, "Bash", { command: "npm test/payments/a.test.ts" }, root, cfg), null);
+  assert.match(checkToolCall(w, "Bash", { command: "npm testx" }, root, cfg), /not in this warden's bash allowlist/);
+  assert.match(checkToolCall(w, "Bash", { command: "git commit/x" }, root, cfg), /reserved for the parent/);
   assert.match(checkToolCall(w, "Bash", { command: "ls > services/auth/x" }, root, cfg), /redirect/);
   assert.equal(checkToolCall(w, "Bash", { command: "ls > services/payments/out.txt" }, root, cfg), null);
   assert.match(checkToolCall(w, "Bash", { command: "ls $(cat x)" }, root, cfg), /substitution/);

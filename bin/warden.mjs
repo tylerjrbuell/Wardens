@@ -275,7 +275,10 @@ const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
 
 function startsWithCommand(segment, prefix) {
   if (prefix === "*") return true;
-  return segment === prefix || segment.startsWith(prefix + " ");
+  if (!segment.startsWith(prefix)) return false;
+  // Word boundary: end, space, or a path continuation (`bun test pkg` allows `bun test pkg/src/x.test.ts`).
+  const next = segment[prefix.length];
+  return next === undefined || next === " " || next === "/" || prefix.endsWith("/");
 }
 
 export function splitShell(cmd) {

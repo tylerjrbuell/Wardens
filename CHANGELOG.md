@@ -1,6 +1,10 @@
 # Changelog
 
-## 0.1.0 — unreleased
+## 0.1.1 — unreleased
+
+- Fix: bash allowlist prefixes now match path continuations (`bun test pkg` allows `bun test pkg/src/x.test.ts`).
+
+## 0.1.0
 
 Initial extraction from reactive-agents-ts (see docs/ORIGIN.md).
 

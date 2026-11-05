@@ -1,6 +1,6 @@
 {
   "name": "wardens",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Extreme-ownership agent teams for Claude Code (plugin + zero-dependency CLI).",
   "type": "module",
