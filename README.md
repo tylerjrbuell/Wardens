@@ -39,12 +39,12 @@ The plugin ships three things. The hooks do nothing unless an agent declares a `
 - **Skills:** `mission-brief`, `upward-report`, `dispatch` (the parent playbook), and `wardens` (admin).
 - **Agents:** `debrief-scribe` and `evidence-warden`. Both are generic, and you can repoint their output directories in config.
 
-Requires Node ≥ 18. The CLI has no dependencies.
+Requires Node ≥ 18. The CLI is a single file with no dependencies. For CI, fetch `bin/warden.mjs` pinned to a commit and run `node warden.mjs doctor --strict`. (`npx github:…` currently trips an npm bug, `GitFetcher requires an Arborist constructor`.)
 
 ## Quick start
 
 ```bash
-W="node ~/.claude/plugins/…/wardens/bin/warden.mjs"   # or: npx github:tylerjrbuell/wardens
+W="node ~/.claude/plugins/…/wardens/bin/warden.mjs"   # or any copy of bin/warden.mjs: one file, no deps
 $W new payments-warden --edit "services/payments/**" --test "npm test -- services/payments"
 $EDITOR .claude/agents/payments-warden.md               # write the domain primer
 $W doctor                                               # lint definitions
