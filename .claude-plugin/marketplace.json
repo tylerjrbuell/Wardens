@@ -4,13 +4,27 @@
     "name": "Tyler Buell"
   },
   "metadata": {
-    "description": "Extreme-ownership agent teams for Claude Code."
+    "description": "Wardens: extreme-ownership agent teams for Claude Code (bounded subagents, hook-enforced authority, typed contracts, outcome ledger)."
   },
   "plugins": [
     {
       "name": "wardens",
       "source": "./",
-      "description": "Bounded domain wardens with hook-enforced authority, MissionBrief/UpwardReport contracts, and an outcome ledger."
+      "description": "Extreme-ownership agent teams for Claude Code: bounded subagents (wardens) with hook-enforced path authority, MissionBrief-in / UpwardReport-out contracts, evidence-backed confidence, and an outcome ledger.",
+      "keywords": [
+        "claude-code",
+        "claude-code-plugin",
+        "subagents",
+        "multi-agent",
+        "agent-teams",
+        "ai-agents",
+        "hooks",
+        "guardrails",
+        "code-ownership",
+        "governance",
+        "extreme-ownership",
+        "agentic-coding"
+      ]
     }
   ]
 }

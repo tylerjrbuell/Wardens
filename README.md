@@ -1,12 +1,51 @@
-# Wardens
+<p align="center"><img src="assets/icon.png" width="120" alt="Wardens shield"></p>
 
-**Extreme-ownership agent teams for Claude Code.** Give each risky area of your codebase a bounded subagent, a *warden*, that owns changes there end to end. Wardens receive intent through a **MissionBrief**, report results through an **UpwardReport**, and hooks enforce their authority. Prompts alone don't.
+<h1 align="center">Wardens</h1>
+
+<p align="center"><b>Extreme-ownership agent teams for Claude Code.</b><br>
+Bounded subagents that own a slice of your codebase, take a typed mission, stay inside their authority, and report the truth back.</p>
+
+<p align="center">
+<img alt="Claude Code plugin" src="https://img.shields.io/badge/Claude%20Code-plugin-e07a1f">
+<img alt="zero dependencies" src="https://img.shields.io/badge/dependencies-0-2ea44f">
+<img alt="node >= 18" src="https://img.shields.io/badge/node-%E2%89%A518-339933">
+<img alt="MIT" src="https://img.shields.io/badge/license-MIT-blue">
+</p>
+
+Subagents are powerful and unaccountable. You hand one a task string, it edits whatever it likes, maybe commits, and comes back with confident prose. **Wardens** turns them into a team with a chain of command:
+
+- **Every warden owns specific paths**, and hooks *deny* tool calls outside them. This isn't a prompt asking nicely.
+- **Every dispatch carries a MissionBrief**: end-state, why, bounds, success criteria, and retry budget. A vague or authority-widening brief never reaches the warden.
+- **Every result is an UpwardReport** with a typed status, and confidence has to be backed by verification. "Done! 0.95 confident" with no evidence gets sent back.
+- **Every mission is recorded**, so `warden stats` tells you which wardens earn their keep.
 
 ```
 parent ──MissionBrief──▶ warden ──(guarded tools)──▶ code
    ▲                                     │
    └──────────── UpwardReport ◀──────────┘
           deterministic FSM: verify · retry · re-route · escalate
+```
+
+## See it work
+
+This is real hook output for a `payments-warden` that owns `services/payments/**`:
+
+```text
+▸ parent dispatches with a bare task string
+MissionBrief rejected for payments-warden:
+- no `mission-brief:` block found in the dispatch prompt
+
+▸ warden drifts into another team's code
+denied-by-authority (payments-warden): Edit services/auth/session.ts is outside
+edit authority [services/payments/**]. Do not work around this.
+
+▸ warden tries to ship its own work
+denied-by-authority (payments-warden): `git commit` is reserved for the parent
+(wardens never integrate or release).
+
+▸ warden claims victory without evidence
+Your UpwardReport is invalid:
+- confidence ≥ 0.7 requires `verification` (commands you ran + result)
 ```
 
 Wardens came out of [reactive-agents-ts](https://github.com/tylerjrbuell/reactive-agents-ts), where ten of them handled **166 logged missions** between May and November 2026. This pack generalizes the system and fixes what that run exposed: authority that existed only in prose, a lift evaluation that never ran, and primers that went stale. [docs/ORIGIN.md](docs/ORIGIN.md) has the evidence.

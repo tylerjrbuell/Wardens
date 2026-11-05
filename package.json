@@ -2,7 +2,7 @@
   "name": "wardens",
   "version": "0.2.0",
   "private": true,
-  "description": "Extreme-ownership agent teams for Claude Code (plugin + zero-dependency CLI).",
+  "description": "Extreme-ownership agent teams for Claude Code: bounded subagents (wardens) with hook-enforced path authority, MissionBrief-in / UpwardReport-out contracts, evidence-backed confidence, and an outcome ledger.",
   "type": "module",
   "bin": {
     "warden": "bin/warden.mjs"
@@ -13,5 +13,23 @@
   "scripts": {
     "test": "node --test tests/*.test.mjs"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "claude-code-plugin",
+    "subagents",
+    "multi-agent",
+    "agent-teams",
+    "ai-agents",
+    "hooks",
+    "guardrails",
+    "code-ownership",
+    "governance",
+    "extreme-ownership",
+    "agentic-coding"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tylerjrbuell/wardens"
+  }
 }
